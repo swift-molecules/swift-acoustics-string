@@ -214,6 +214,39 @@ extension `Acoustics Tests`.String {
         #expect(worst / start < 1e-9)
     }
 
+    /// A body with two drives per string takes each string at its own place, and energy is kept as at one place.
+    @Test func `Strings at their own places on a bridge keep their energy`() {
+        var string = `Acoustics Tests`.string()
+        string.displace(`Acoustics Tests`.pulled(.init(up: 0.004, across: 0.007), at: 0.86))
+        let other = `Acoustics Tests`.string()
+        var bridge = Acoustics.String.Bridge(
+            strings: [string, other],
+            body: Acoustics.Resonator(
+                [(98.0, 1.0, 0.3, 0.0, 0.0), (183.0, -0.8, 0.9, 0.5, 0.2), (412.0, 0.5, -0.7, -0.4, 0.6)].map {
+                    .init(
+                        frequency: Frequency.hertz($0.0),
+                        decay: 0,
+                        mass: 0.4,
+                        reach: 0,
+                        driven: [$0.1, $0.2, $0.3, $0.4]
+                    )
+                },
+                every: Time.Duration.seconds(`Acoustics Tests`.interval)
+            )
+        )
+        let start = bridge.energy.underlying
+        var worst = 0.0
+        var moved = 0.0
+        (0..<40_000).forEach { _ in
+            bridge.advance()
+            worst = max(worst, abs(bridge.energy.underlying - start))
+            moved = max(moved, abs(bridge.body.felt[2].underlying))
+        }
+        #expect(moved > 1e-6)
+        #expect(worst / start < 1e-9)
+        #expect(bridge.body.ports == 4)
+    }
+
     /// Plucks with a fingertip drawn across 20 cm from the bridge, a finger stopping the string at `stop` if given.
     static func plucked(
         stop: Double?,
