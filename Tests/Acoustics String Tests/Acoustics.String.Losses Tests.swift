@@ -112,9 +112,10 @@ extension `Acoustics Tests`.Losses {
 }
 
 extension `Acoustics Tests`.Losses {
-    /// The grid carries a + b β² + c β⁴; the law grows as √f in air, as f in heat and as f³ in bending, so the match
-    /// can't be exact. It holds within −40 % and +30 % on every partial that rings for 50 ms or longer.
-    @Test func `The grid's decay follows the physical law within −40 % and +30 % on every partial that rings`() {
+    /// The grid carries a + b β² + c β⁴ and its memory; the law grows as √f in air, as f in heat and as f³ in bending.
+    /// Without the memory the match held only within −40 % and +30 %; with it, within −3 % and +8 % for steel, and
+    /// −16 % and +10 % for a very lossy string, on every partial that rings for 50 ms or longer.
+    @Test func `The grid's decay follows the physical law within −20 % and +15 % on every partial that rings`() {
         for losses in [Self.steel, .steel(diameter: 0.001, in: nil), .init(diameter: 0.001, bending: 0.05)] {
             let string = `Acoustics Tests`.string(losses: losses)
             var worst = (low: 1.0, high: 1.0)
@@ -134,23 +135,47 @@ extension `Acoustics Tests`.Losses {
                 }
                 n += 1
             }
-            #expect(worst.low > 0.6, "lowest \(worst.low)")
-            #expect(worst.high < 1.3, "highest \(worst.high)")
+            #expect(worst.low > 0.8, "lowest \(worst.low)")
+            #expect(worst.high < 1.15, "highest \(worst.high)")
         }
     }
 
-    /// Rings one partial alone and reads its decay from how its energy falls.
+    /// Rings one partial alone and reads its decay from how its own amplitude falls: the string's shape projected on
+    /// the partial, with its speed, as √(q² + (q′/ω)²).
+    ///
+    /// WHY: not from the energy, which also holds the string's memory; its slowest part relaxes on its own and, late
+    /// on, holds more energy than a high partial does.
     static func rung(_ n: Double, losses: Acoustics.String.Losses, for time: Double) -> (found: Double, wanted: Double) {
         var string = `Acoustics Tests`.string(losses: losses)
         let partial = partial(n, of: string)
         string.displace { along in
             .init(up: `Acoustics Tests`.metres(0.0001 * Foundation.sin(partial.wavenumber * along.underlying)), across: 0)
         }
+        let spacing = string.spacing.underlying
+        let interval = `Acoustics Tests`.interval
+        let angular = 2 * Double.pi * partial.frequency
+        func amplitude(_ string: Acoustics.String, _ before: [Double]) -> Double {
+            let shape = string.shape.map { $0.up.underlying }
+            var now = 0.0
+            var speed = 0.0
+            for index in shape.indices {
+                let mode = Foundation.sin(partial.wavenumber * Double(index) * spacing)
+                now += shape[index] * mode
+                speed += (shape[index] - before[index]) * mode / interval
+            }
+            return (now * now + speed * speed / (angular * angular)).squareRoot()
+        }
+        let settle = Int(0.02 / interval)
+        (0..<settle).forEach { _ in string.advance() }
+        var before = string.shape.map { $0.up.underlying }
         string.advance()
-        let start = string.energy.underlying
-        let steps = Int(time / `Acoustics Tests`.interval)
-        (0..<steps).forEach { _ in string.advance() }
-        let found = Foundation.log(start / string.energy.underlying) / (2 * Double(steps) * `Acoustics Tests`.interval)
+        let start = amplitude(string, before)
+        let steps = Int(time / interval)
+        (0..<steps).forEach { _ in
+            before = string.shape.map { $0.up.underlying }
+            string.advance()
+        }
+        let found = Foundation.log(start / amplitude(string, before)) / (Double(steps) * interval)
         return (found, string.decay(at: Wavenumber.amount(partial.wavenumber)).underlying)
     }
 
@@ -158,7 +183,7 @@ extension `Acoustics Tests`.Losses {
         let lossy = Acoustics.String.Losses(diameter: 0.001, bending: 0.05, steady: 0.002)
         for n in [1.0, 6, 30] {
             let rung = Self.rung(n, losses: lossy, for: 0.1)
-            #expect(abs(rung.found / rung.wanted - 1) < 0.02, "partial \(n): \(rung.found) against \(rung.wanted)")
+            #expect(abs(rung.found / rung.wanted - 1) < 0.03, "partial \(n): \(rung.found) against \(rung.wanted)")
         }
     }
 

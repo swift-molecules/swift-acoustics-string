@@ -60,7 +60,9 @@ extension Acoustics {
                     speed: tension.underlying / density.underlying,
                     bending: stiffness.underlying / density.underlying,
                     top: Swift.min(16_000, 0.25 / interval.underlying),
-                    spacing: spacing
+                    spacing: spacing,
+                    every: interval.underlying,
+                    remembering: true
                 )
                 let grid = Self.grid(
                     length: length.underlying,
@@ -136,8 +138,8 @@ extension Acoustics {
             self.count = grid.count
             let spacing = length / Double(count)
             self.spacing = Space.Physical.metres(spacing)
-            self.up = Line(count + 1)
-            self.across = Line(count + 1)
+            self.up = Line(count + 1, memory: damping.memory.count)
+            self.across = Line(count + 1, memory: damping.memory.count)
             self.top = (0...count).map { index in
                 guard let board, Double(index) * spacing <= board.reach.underlying else { return -Double.infinity }
                 return -board.clearance(Space.Physical.metres(Double(index) * spacing)).underlying
@@ -157,7 +159,8 @@ extension Acoustics.String {
         interval: Double
     ) -> (count: Int, stepped: Double) {
         let step = interval * interval
-        let wave = tension / density * step + 4 * damping.rising.underlying * interval
+        // WHY: a memory that can't follow pulls as more tension does, so the spacing allows for its whole pull.
+        let wave = (tension / density + damping.strength) * step + 4 * damping.rising.underlying * interval
         let steep = 64 * damping.steep * interval
         func points(_ stiff: Double) -> Int {
             // WHY: von Neumann on the step: h⁴ ≥ (c²k² + 4σ₁k) h² + 4κ²k² + 16σ₂k keeps every partial bounded.
@@ -197,7 +200,11 @@ extension Acoustics.String {
 
     /// How fast a partial of this wavenumber dies on the grid, before anything touches the string.
     public func decay(at wavenumber: Wavenumber.Value<Double>) -> Decay::Decay.Value<Double> {
-        Decay::Decay.amount(damping.decay(wavenumber.underlying, spacing: spacing.underlying))
+        let beta = wavenumber.underlying
+        let angular =
+            ((tension.underlying * beta * beta + stiffness.underlying * beta * beta * beta * beta) / density.underlying)
+            .squareRoot()
+        return Decay::Decay.amount(damping.decay(beta, angular: angular, spacing: spacing.underlying))
     }
 
     /// Where the string is, point by point from nut to bridge.
@@ -238,6 +245,10 @@ extension Acoustics.String {
         }
         up.bent = Self.bend(up.before)
         across.bent = Self.bend(across.before)
+        for part in up.kept.indices {
+            up.kept[part] = up.now
+            across.kept[part] = across.now
+        }
     }
 
     @usableFromInline
@@ -267,6 +278,10 @@ extension Acoustics.String {
                     taut * (line.now[index] - line.now[index - 1])
                     * (line.before[index] - line.before[index - 1]) / 2
                 total += stiff * curve[index] * curved[index] / 2
+                for (part, kept) in zip(damping.memory, line.kept) {
+                    let strain = line.now[index] - line.now[index - 1] - kept[index] + kept[index - 1]
+                    total += density * part.strength * strain * strain / (2 * spacing)
+                }
             }
         }
         let spans = fingers.map(span)
@@ -385,8 +400,9 @@ extension Acoustics.String {
         let rise = 2 * damping.rising.underlying * interval / (spacing * spacing)
         let steady = damping.steady.underlying * interval
         let steep = 2 * damping.steep * interval / (spacing * spacing * spacing * spacing)
-        up.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep)
-        across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep)
+        let pulls = damping.memory.map { $0.strength * step / (spacing * spacing) }
+        up.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
+        across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
         let mass = density * spacing * (1 + steady)
         let slack = step / mass
         let spans = fingers.map(span)
@@ -411,8 +427,9 @@ extension Acoustics.String {
                 index += 1
             }
         }
-        up.turn(end: end.up.underlying)
-        across.turn(end: end.across.underlying)
+        let follows = damping.memory.map { 1 - Double.math.exp(-interval / $0.time) }
+        up.turn(end: end.up.underlying, follows: follows)
+        across.turn(end: end.across.underlying, follows: follows)
     }
 
     /// Lets what is stored at one point push it, then takes the losses of whatever it touches.
