@@ -35,6 +35,13 @@ extension Acoustics {
         @usableFromInline var pattern: [Int] = []
         /// Each region's factored matrix where nothing touches it, by where its vertices are.
         @usableFromInline var factorings: [(places: [Double], matrix: [Double])] = []
+        /// The fingers' presses and regions, kept while no tip moves along the string.
+        @usableFromInline var layout = Layout()
+        /// What the region solves write as they go.
+        @usableFromInline var work = Work()
+        /// Steps the plain way: the presses, regions and matrices laid out afresh each time, every entry eliminated.
+        /// The tests hold the usual way to the same bits.
+        @usableFromInline var plain = false
 
         /// A string that loses what physics says it loses: to the air, and inside its material.
         ///
@@ -304,7 +311,7 @@ extension Acoustics.String {
             }
         }
         // WHY: before the nodes are kept, they are where the stores balance.
-        let kept = pattern == fingers.map(samples)
+        let kept = patterned
         var inside = [Bool](repeating: false, count: count + 1)
         for region in regions {
             for vertex in region.vertices where vertex >= 0 { inside[vertex] = true }
@@ -382,8 +389,7 @@ extension Acoustics.String {
         across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
         let mass = density * spacing * (1 + steady)
         let slack = step / mass
-        let presses = fingers.isEmpty ? [] : presses()
-        let regions = regions(presses)
+        let (presses, regions) = laid()
         var inside = [Bool](repeating: false, count: regions.isEmpty ? 0 : count + 1)
         if regions.isEmpty, !pattern.isEmpty {
             // WHY: with no finger on it the string keeps no nodes; a finger that comes back takes it as it is then.
@@ -394,7 +400,7 @@ extension Acoustics.String {
         if !regions.isEmpty {
             up.ahead[count] = end.up.underlying
             across.ahead[count] = end.across.underlying
-            if pattern != fingers.map(samples) { keep(presses, regions) }
+            if !patterned { keep(presses, regions) }
             // WHY: a region bends its own points; the grid's bending there comes out of the step.
             let shared = 1 + steady
             for region in regions {
@@ -425,38 +431,90 @@ extension Acoustics.String {
             }
         }
         if !regions.isEmpty {
-            var next = held
-            for press in presses.indices {
-                next[4 * press + 2] = held[4 * press]
-                next[4 * press + 3] = held[4 * press + 1]
+            // WHY: taken out of the string while the regions are solved, so nothing else holds them and they are
+            // written in place.
+            var work = Work()
+            var assembled: [[Double]] = []
+            swap(&work, &self.work)
+            swap(&assembled, &layout.assembled)
+            defer {
+                swap(&work, &self.work)
+                swap(&assembled, &layout.assembled)
             }
-            var kept: [(places: [Double], matrix: [Double])] = []
-            for region in regions {
-                let from = vertices(region, up.before, across.before, before: true)
-                let toward = vertices(region, up.ahead, across.ahead, before: false)
-                var start = toward
-                for index in region.vertices.indices where region.vertices[index] < 0 {
-                    // WHY: a node starts from where it would coast.
-                    start.0[index] = 2 * start.0[index] - from.0[index]
-                    start.1[index] = 2 * start.1[index] - from.1[index]
+            var from: (up: [Double], across: [Double]) = ([], [])
+            var toward: (up: [Double], across: [Double]) = ([], [])
+            var start: (up: [Double], across: [Double]) = ([], [])
+            swap(&from, &work.from)
+            swap(&toward, &work.toward)
+            swap(&start, &work.level)
+            defer {
+                swap(&from, &work.from)
+                swap(&toward, &work.toward)
+                swap(&start, &work.level)
+            }
+            // WHY: the matrices are kept as they were unless a region's changes, so a step builds no new list.
+            var kept = true
+            var found = 0
+            var results: [[Double]] = []
+            for (number, region) in regions.enumerated() {
+                vertices(region, up.before, across.before, before: true, into: &from)
+                vertices(region, up.ahead, across.ahead, before: false, into: &toward)
+                Self.size(&start.up, toward.up.count)
+                Self.size(&start.across, toward.across.count)
+                for index in region.vertices.indices {
+                    if region.vertices[index] < 0 {
+                        // WHY: a node starts from where it would coast.
+                        start.up[index] = 2 * toward.up[index] - from.up[index]
+                        start.across[index] = 2 * toward.across[index] - from.across[index]
+                    } else {
+                        start.up[index] = toward.up[index]
+                        start.across[index] = toward.across[index]
+                    }
                 }
                 // WHY: a region's matrix where nothing touches is kept while its vertices stay where they are.
                 var factored = factorings.first { $0.places == region.places }?.matrix ?? []
-                let ahead = solve(region, presses, from: from, toward: toward, start: start, .step(slack: slack), factored: &factored)
-                if !factored.isEmpty { kept.append((region.places, factored)) }
+                solve(
+                    region,
+                    presses,
+                    from: from,
+                    toward: toward,
+                    start: &start,
+                    .step(slack: slack),
+                    factored: &factored,
+                    assembled: &assembled[number],
+                    work: &work
+                )
+                if !factored.isEmpty {
+                    if kept, found < factorings.count, factorings[found].places == region.places,
+                        factorings[found].matrix == factored
+                    {
+                        found += 1
+                    } else {
+                        kept = false
+                    }
+                }
+                results.append(factored)
                 for index in region.vertices.indices {
                     let vertex = region.vertices[index]
                     if vertex > 0, vertex < count {
-                        up.ahead[vertex] = ahead.0[index]
-                        across.ahead[vertex] = ahead.1[index]
+                        up.ahead[vertex] = start.up[index]
+                        across.ahead[vertex] = start.across[index]
                     } else if vertex < 0 {
-                        next[4 * (-1 - vertex)] = ahead.0[index]
-                        next[4 * (-1 - vertex) + 1] = ahead.1[index]
+                        // WHY: a press's place now becomes its place a step before; each press is in one region.
+                        let base = 4 * (-1 - vertex)
+                        held[base + 2] = held[base]
+                        held[base + 3] = held[base + 1]
+                        held[base] = start.up[index]
+                        held[base + 1] = start.across[index]
                     }
                 }
             }
-            held = next
-            factorings = kept
+            if !kept || found != factorings.count {
+                factorings = []
+                for (region, factored) in zip(regions, results) where !factored.isEmpty {
+                    factorings.append((region.places, factored))
+                }
+            }
         }
         up.turn(end: end.up.underlying, follows: follows)
         across.turn(end: end.across.underlying, follows: follows)

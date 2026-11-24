@@ -341,8 +341,33 @@ extension Acoustics.String {
         before: Bool,
         straight: Bool = false
     ) -> ([Double], [Double]) {
-        var y = [Double](repeating: 0, count: region.vertices.count)
-        var z = y
+        var level: (up: [Double], across: [Double]) = ([], [])
+        vertices(region, ups, acrosses, before: before, straight: straight, into: &level)
+        return level
+    }
+
+    /// The same, written into `level`.
+    @usableFromInline
+    func vertices(
+        _ region: Region,
+        _ ups: [Double],
+        _ acrosses: [Double],
+        before: Bool,
+        straight: Bool = false,
+        into level: inout (up: [Double], across: [Double])
+    ) {
+        var upward: [Double] = []
+        var sideways: [Double] = []
+        swap(&upward, &level.up)
+        swap(&sideways, &level.across)
+        defer {
+            swap(&upward, &level.up)
+            swap(&sideways, &level.across)
+        }
+        Self.size(&upward, region.vertices.count)
+        Self.size(&sideways, region.vertices.count)
+        var y = upward.mutableSpan
+        var z = sideways.mutableSpan
         for index in region.vertices.indices {
             let vertex = region.vertices[index]
             if vertex >= 0 {
@@ -360,7 +385,85 @@ extension Acoustics.String {
                 z[index] = acrosses[stretch] * (1 - part) + acrosses[stretch + 1] * part
             }
         }
-        return (y, z)
+    }
+}
+
+extension Acoustics.String {
+    /// What a solve writes as it goes, kept from step to step so a step allocates nothing for it.
+    @usableFromInline
+    struct Work: Sendable {
+        @usableFromInline var unknown: [Int] = []
+        @usableFromInline var columns: [Int] = []
+        @usableFromInline var matrix: [Double] = []
+        @usableFromInline var miss: [Double] = []
+        @usableFromInline var saved: [Double] = []
+        @usableFromInline var savedMiss: [Double] = []
+        @usableFromInline var change: [Double] = []
+        @usableFromInline var middleUp: [Double] = []
+        @usableFromInline var middleAcross: [Double] = []
+        @usableFromInline var reaches: [Double] = []
+        @usableFromInline var sites: [Site] = []
+        /// A region's vertices two steps before, where they would coast, and where its solve starts and ends.
+        @usableFromInline var from: (up: [Double], across: [Double]) = ([], [])
+        @usableFromInline var toward: (up: [Double], across: [Double]) = ([], [])
+        @usableFromInline var level: (up: [Double], across: [Double]) = ([], [])
+        /// Whether each point is in a region.
+        @usableFromInline var inside: [Bool] = []
+
+        @usableFromInline
+        init() {}
+    }
+
+    /// The fingers' presses and the regions they make.
+    ///
+    /// WHY: both follow from where the tips are along the string and how wide they are, and nothing else that changes;
+    /// they are kept while no tip moves along the string, so a held or lifted tip doesn't lay them out every step.
+    @usableFromInline
+    struct Layout: Sendable {
+        /// Each finger's place and width, in turn.
+        @usableFromInline var tips: [Double] = []
+        @usableFromInline var presses: [Press] = []
+        @usableFromInline var regions: [Region] = []
+        /// Each region's matrix as laid by its masses, springs and bending, once a step has laid it.
+        @usableFromInline var assembled: [[Double]] = []
+
+        @usableFromInline
+        init() {}
+    }
+
+    /// The presses and regions for the fingers as they are now, laid out afresh only when a tip has moved along the
+    /// string or changed width.
+    @usableFromInline
+    mutating func laid() -> (presses: [Press], regions: [Region]) {
+        var same = !plain && layout.tips.count == 2 * fingers.count
+        if same {
+            for (index, finger) in fingers.enumerated()
+            where layout.tips[2 * index] != finger.place.underlying
+                || layout.tips[2 * index + 1] != finger.width.underlying
+            {
+                same = false
+                break
+            }
+        }
+        if !same {
+            layout.tips.removeAll(keepingCapacity: true)
+            for finger in fingers {
+                layout.tips.append(finger.place.underlying)
+                layout.tips.append(finger.width.underlying)
+            }
+            layout.presses = fingers.isEmpty ? [] : presses()
+            layout.regions = regions(layout.presses)
+            layout.assembled = [[Double]](repeating: [], count: layout.regions.count)
+        }
+        return (layout.presses, layout.regions)
+    }
+
+    /// Whether `pattern` is each finger's count of samples, as kept with `held`.
+    @usableFromInline
+    var patterned: Bool {
+        guard pattern.count == fingers.count else { return false }
+        for (index, finger) in fingers.enumerated() where pattern[index] != samples(finger) { return false }
+        return true
     }
 }
 
@@ -393,6 +496,36 @@ extension Acoustics.String {
         _ way: Solve,
         factored: inout [Double]
     ) -> (up: [Double], across: [Double]) {
+        var work = Work()
+        var assembled: [Double] = []
+        var level = start
+        solve(
+            region,
+            presses,
+            from: from,
+            toward: toward,
+            start: &level,
+            way,
+            factored: &factored,
+            assembled: &assembled,
+            work: &work
+        )
+        return level
+    }
+
+    /// `solve`, from `start` and into it, writing as it goes into `work`.
+    @usableFromInline
+    func solve(
+        _ region: Region,
+        _ presses: [Press],
+        from: (up: [Double], across: [Double]),
+        toward: (up: [Double], across: [Double]),
+        start: inout (up: [Double], across: [Double]),
+        _ way: Solve,
+        factored: inout [Double],
+        assembled: inout [Double],
+        work: inout Work
+    ) {
         let vertices = region.vertices
         let total = vertices.count
         let twice = 2 * interval.underlying
@@ -404,7 +537,10 @@ extension Acoustics.String {
         case .rest: resting = true
         }
         // The unknowns: up and across at each vertex that moves, in order.
-        var unknown = [Int](repeating: -1, count: total)
+        var unknown: [Int] = []
+        swap(&unknown, &work.unknown)
+        defer { swap(&unknown, &work.unknown) }
+        Self.fill(&unknown, -1, total)
         var unknowns = 0
         for index in 0..<total {
             let vertex = vertices[index]
@@ -414,21 +550,65 @@ extension Acoustics.String {
                 unknowns += 2
             }
         }
-        var ups = start.up
-        var acrosses = start.across
-        guard unknowns > 0 else { return (ups, acrosses) }
+        var ups: [Double] = []
+        var acrosses: [Double] = []
+        swap(&ups, &start.up)
+        swap(&acrosses, &start.across)
+        defer {
+            swap(&ups, &start.up)
+            swap(&acrosses, &start.across)
+        }
+        guard unknowns > 0 else { return }
         let band = Swift.min(region.band, unknowns - 1)
         let row = 2 * band + 1
-        var matrix = [Double](repeating: 0, count: unknowns * row)
-        var miss = [Double](repeating: 0, count: unknowns)
+        var matrix: [Double] = []
+        var miss: [Double] = []
+        var saved: [Double] = []
+        var savedMiss: [Double] = []
+        var change: [Double] = []
+        var middleUp: [Double] = []
+        var middleAcross: [Double] = []
+        var reaches: [Double] = []
+        var columns: [Int] = []
+        var sites: [Site] = []
+        swap(&matrix, &work.matrix)
+        swap(&miss, &work.miss)
+        swap(&saved, &work.saved)
+        swap(&savedMiss, &work.savedMiss)
+        swap(&change, &work.change)
+        swap(&middleUp, &work.middleUp)
+        swap(&middleAcross, &work.middleAcross)
+        swap(&reaches, &work.reaches)
+        swap(&columns, &work.columns)
+        swap(&sites, &work.sites)
+        defer {
+            swap(&matrix, &work.matrix)
+            swap(&miss, &work.miss)
+            swap(&saved, &work.saved)
+            swap(&savedMiss, &work.savedMiss)
+            swap(&change, &work.change)
+            swap(&middleUp, &work.middleUp)
+            swap(&middleAcross, &work.middleAcross)
+            swap(&reaches, &work.reaches)
+            swap(&columns, &work.columns)
+            swap(&sites, &work.sites)
+        }
+        // WHY: only sized; each is written before it is read.
+        Self.size(&matrix, unknowns * row)
+        Self.size(&miss, unknowns)
+        Self.size(&saved, unknowns * row)
+        Self.size(&savedMiss, unknowns)
+        Self.size(&change, unknowns)
+        Self.size(&middleUp, total)
+        Self.size(&middleAcross, total)
+        Self.size(&columns, band)
+        sites.removeAll(keepingCapacity: true)
         // A Jacobian of the springs at the middle is half their stiffness; at rest, all of it.
         let half = resting ? 1.0 : 0.5
 
         var building = true
-        func add(_ i: Int, _ j: Int, _ value: Double) {
-            guard building else { return }
-            matrix[i * row + j - i + band] += value
-        }
+        // WHY: the matrix's place for row `i`, column `j`.
+        func at(_ i: Int, _ j: Int) -> Int { i * row + j - i + band }
 
         // What the losses push with, frozen two steps before.
         var lossy = false
@@ -437,246 +617,316 @@ extension Acoustics.String {
             if let board, board.friction > .zero || board.damping > .zero { lossy = true }
         }
 
-        // Each friction: the unknowns it slides along and by how much, how far it has slid, its most and its creep.
-        var sites: [Site] = []
-        var middleUp = [Double](repeating: 0, count: total)
-        var middleAcross = middleUp
-        var touching = false
-        func assemble() -> Double {
-            touching = false
-            if building { for index in matrix.indices { matrix[index] = 0 } }
-            for index in miss.indices { miss[index] = 0 }
+        // Each friction (in `sites`): the unknowns it slides along and by how much, how far it has slid, its most and
+        // its creep.
+        // WHY: the arrays a round writes are handed in, so each is written through one span, not looked up afresh.
+        func assemble(
+            _ matrix: inout [Double],
+            _ miss: inout [Double],
+            _ sites: inout [Site],
+            _ middleUp: inout [Double],
+            _ middleAcross: inout [Double]
+        ) -> (worst: Double, touching: Bool) {
+            var touching = false
+            var m = matrix.mutableSpan
+            var r = miss.mutableSpan
+            var mu = middleUp.mutableSpan
+            var ma = middleAcross.mutableSpan
+            let ups = ups.span
+            let acrosses = acrosses.span
+            func add(_ m: inout MutableSpan<Double>, _ i: Int, _ j: Int, _ value: Double) {
+                guard building else { return }
+                m[at(i, j)] += value
+            }
+            // WHY: the masses', springs' and bending's part of the matrix is the same every round and every step while
+            // the region is, and every entry takes it before anything that touches; so it is laid once and kept in
+            // `assembled`, and a round starts from it with the same bits.
+            let laying = building && (plain || assembled.count != m.count)
+            func lay(_ m: inout MutableSpan<Double>, _ i: Int, _ j: Int, _ value: Double) {
+                guard laying else { return }
+                m[at(i, j)] += value
+            }
+            if laying {
+                for index in 0..<m.count { m[index] = 0 }
+            } else if building {
+                let laid = assembled.span
+                for index in 0..<m.count { m[index] = laid[index] }
+            }
+            for index in 0..<r.count { r[index] = 0 }
             sites.removeAll(keepingCapacity: true)
             for index in 0..<total {
                 let fromUp = resting ? ups[index] : from.up[index]
                 let fromAcross = resting ? acrosses[index] : from.across[index]
-                middleUp[index] = (fromUp + ups[index]) / 2
-                middleAcross[index] = (fromAcross + acrosses[index]) / 2
+                mu[index] = (fromUp + ups[index]) / 2
+                ma[index] = (fromAcross + acrosses[index]) / 2
                 let at = unknown[index]
                 if at >= 0, !resting, vertices[index] >= 0 {
-                    miss[at] = ups[index] - toward.up[index]
-                    miss[at + 1] = acrosses[index] - toward.across[index]
-                    add(at, at, 1)
-                    add(at + 1, at + 1, 1)
+                    r[at] = ups[index] - toward.up[index]
+                    r[at + 1] = acrosses[index] - toward.across[index]
+                    lay(&m, at, at, 1)
+                    lay(&m, at + 1, at + 1, 1)
                 }
             }
             for spring in region.springs {
-                let up = spring.stiffness * (middleUp[spring.a] - middleUp[spring.b])
-                let across = spring.stiffness * (middleAcross[spring.a] - middleAcross[spring.b])
+                let up = spring.stiffness * (mu[spring.a] - mu[spring.b])
+                let across = spring.stiffness * (ma[spring.a] - ma[spring.b])
                 let a = unknown[spring.a]
                 let b = unknown[spring.b]
                 let firm = slack * spring.stiffness * half
                 if a >= 0 {
-                    miss[a] += slack * up
-                    miss[a + 1] += slack * across
-                    add(a, a, firm)
-                    add(a + 1, a + 1, firm)
+                    r[a] += slack * up
+                    r[a + 1] += slack * across
+                    lay(&m, a, a, firm)
+                    lay(&m, a + 1, a + 1, firm)
                 }
                 if b >= 0 {
-                    miss[b] -= slack * up
-                    miss[b + 1] -= slack * across
-                    add(b, b, firm)
-                    add(b + 1, b + 1, firm)
+                    r[b] -= slack * up
+                    r[b + 1] -= slack * across
+                    lay(&m, b, b, firm)
+                    lay(&m, b + 1, b + 1, firm)
                 }
                 if a >= 0, b >= 0 {
-                    add(a, b, -firm)
-                    add(b, a, -firm)
-                    add(a + 1, b + 1, -firm)
-                    add(b + 1, a + 1, -firm)
+                    lay(&m, a, b, -firm)
+                    lay(&m, b, a, -firm)
+                    lay(&m, a + 1, b + 1, -firm)
+                    lay(&m, b + 1, a + 1, -firm)
                 }
             }
             for bend in region.bends {
                 let up =
                     2 * bend.weight
-                    * (bend.ca * middleUp[bend.a] + bend.cb * middleUp[bend.b] + bend.cc * middleUp[bend.c])
+                    * (bend.ca * mu[bend.a] + bend.cb * mu[bend.b] + bend.cc * mu[bend.c])
                 let across =
                     2 * bend.weight
-                    * (bend.ca * middleAcross[bend.a] + bend.cb * middleAcross[bend.b]
-                        + bend.cc * middleAcross[bend.c])
+                    * (bend.ca * ma[bend.a] + bend.cb * ma[bend.b]
+                        + bend.cc * ma[bend.c])
                 let at: InlineArray<3, Int> = [unknown[bend.a], unknown[bend.b], unknown[bend.c]]
                 let by: InlineArray<3, Double> = [bend.ca, bend.cb, bend.cc]
                 for i in 0..<3 where at[i] >= 0 {
-                    miss[at[i]] += slack * up * by[i]
-                    miss[at[i] + 1] += slack * across * by[i]
+                    r[at[i]] += slack * up * by[i]
+                    r[at[i] + 1] += slack * across * by[i]
+                    guard laying else { continue }
                     for j in 0..<3 where at[j] >= 0 {
                         let firm = slack * 2 * bend.weight * by[i] * by[j] * half
-                        add(at[i], at[j], firm)
-                        add(at[i] + 1, at[j] + 1, firm)
+                        lay(&m, at[i], at[j], firm)
+                        lay(&m, at[i] + 1, at[j] + 1, firm)
                     }
                 }
             }
-            for index in 0..<total {
-                let at = unknown[index]
-                guard at >= 0 else { continue }
-                let vertex = vertices[index]
-                let fromUp = resting ? ups[index] : from.up[index]
-                let fromAcross = resting ? acrosses[index] : from.across[index]
-                // The board under the vertex.
-                var length = spacing
-                var level: Double?
-                var press: Press?
-                if vertex >= 0 {
-                    if board != nil, top[vertex].isFinite { level = top[vertex] }
-                } else {
-                    let pressing = presses[-1 - vertex]
-                    press = pressing
-                    length = fingers[pressing.finger].width.underlying * pressing.share
-                    level = self.level(pressing.place)
-                }
-                if let board, let level {
-                    let contact = board.contact
-                    let now = level - ups[index]
-                    let was = level - fromUp
-                    if now > 0 || was > 0 {
+            if laying {
+                Self.size(&assembled, m.count)
+                var laid = assembled.mutableSpan
+                for index in 0..<m.count { laid[index] = m[index] }
+            }
+            // WHY: where nothing touches, now or two steps before, nothing below adds anything.
+            if !untouched {
+                for index in 0..<total {
+                    let at = unknown[index]
+                    guard at >= 0 else { continue }
+                    let vertex = vertices[index]
+                    let fromUp = resting ? ups[index] : from.up[index]
+                    let fromAcross = resting ? acrosses[index] : from.across[index]
+                    // The board under the vertex.
+                    var length = spacing
+                    var level: Double?
+                    var press: Press?
+                    if vertex >= 0 {
+                        if board != nil, top[vertex].isFinite { level = top[vertex] }
+                    } else {
+                        let pressing = presses[-1 - vertex]
+                        press = pressing
+                        length = fingers[pressing.finger].width.underlying * pressing.share
+                        level = self.level(pressing.place)
+                    }
+                    if let board, let level {
+                        let contact = board.contact
+                        let now = level - ups[index]
+                        let was = level - fromUp
+                        if now > 0 || was > 0 {
+                            touching = true
+                            let mean = Self.mean(
+                                now,
+                                was,
+                                { length * contact.energy(pressed: Space.Physical.metres($0)).underlying },
+                                { length * contact.force(pressed: Space.Physical.metres($0)).underlying },
+                                {
+                                    $0 > 0
+                                        ? contact.exponent * length
+                                            * contact.force(pressed: Space.Physical.metres($0)).underlying / $0 : 0
+                                }
+                            )
+                            r[at] -= slack * mean.value
+                            add(&m, at, at, slack * mean.slope * 2 * half)
+                        }
+                        if lossy, was > 0 {
+                            let push = length * contact.force(pressed: Space.Physical.metres(was)).underlying
+                            let damping = board.damping.underlying * push / twice
+                            r[at] += slack * damping * (ups[index] - fromUp)
+                            add(&m, at, at, slack * damping)
+                            if board.friction > .zero, push > 0, board.creep > .zero {
+                                sites.append(
+                                    Site(
+                                        first: at + 1,
+                                        second: at,
+                                        along: 1,
+                                        besides: 0,
+                                        slid: acrosses[index] - fromAcross,
+                                        most: board.friction.underlying * push,
+                                        creep: twice * board.creep.underlying
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    guard let press else { continue }
+                    // The flesh on the node.
+                    let finger = fingers[press.finger]
+                    let radius = finger.radius.underlying
+                    let contact = finger.contact
+                    let share = press.share
+                    let nowUp = ups[index] - finger.centre.up.underlying
+                    let nowAcross = acrosses[index] - finger.centre.across.underlying
+                    let wasUp = fromUp - finger.centre.up.underlying
+                    let wasAcross = fromAcross - finger.centre.across.underlying
+                    let now = (nowUp * nowUp + nowAcross * nowAcross).squareRoot()
+                    let was = (wasUp * wasUp + wasAcross * wasAcross).squareRoot()
+                    if now < radius || was < radius, now + was > 0 {
                         touching = true
                         let mean = Self.mean(
-                            now,
-                            was,
-                            { length * contact.energy(pressed: Space.Physical.metres($0)).underlying },
-                            { length * contact.force(pressed: Space.Physical.metres($0)).underlying },
-                            { $0 > 0 ? contact.exponent * length * contact.force(pressed: Space.Physical.metres($0)).underlying / $0 : 0 }
+                            radius - now,
+                            radius - was,
+                            { share * contact.energy(pressed: Space.Physical.metres($0)).underlying },
+                            { share * contact.force(pressed: Space.Physical.metres($0)).underlying },
+                            {
+                                $0 > 0
+                                    ? contact.exponent * share
+                                        * contact.force(pressed: Space.Physical.metres($0)).underlying / $0 : 0
+                            }
                         )
-                        miss[at] -= slack * mean.value
-                        add(at, at, slack * mean.slope * 2 * half)
+                        // WHY: what the flesh stores falls as the node moves away from the tip's centre, by `mean` over
+                        // the change of that distance; the change of the distance is the sum of the two places over the
+                        // sum of the two distances, dotted with the move.
+                        let sum = now + was
+                        let outUp = (nowUp + wasUp) / sum
+                        let outAcross = (nowAcross + wasAcross) / sum
+                        r[at] -= slack * mean.value * outUp
+                        r[at + 1] -= slack * mean.value * outAcross
+                        let towardUp = now > 0 ? nowUp / now : 0
+                        let towardAcross = now > 0 ? nowAcross / now : 0
+                        let firm = slack * mean.slope * 2 * half
+                        let soft = slack * mean.value * 2 * half / sum
+                        add(&m, at, at, firm * outUp * towardUp - soft * (1 - outUp * towardUp))
+                        add(&m, at, at + 1, firm * outUp * towardAcross + soft * outUp * towardAcross)
+                        add(&m, at + 1, at, firm * outAcross * towardUp + soft * outAcross * towardUp)
+                        add(&m, at + 1, at + 1, firm * outAcross * towardAcross - soft * (1 - outAcross * towardAcross))
                     }
-                    if lossy, was > 0 {
-                        let push = length * contact.force(pressed: Space.Physical.metres(was)).underlying
-                        let damping = board.damping.underlying * push / twice
-                        miss[at] += slack * damping * (ups[index] - fromUp)
-                        add(at, at, slack * damping)
-                        if board.friction > .zero, push > 0, board.creep > .zero {
+                    if lossy, was < radius, was > 0, finger.damping > .zero || finger.friction > .zero {
+                        let push = share * contact.force(pressed: Space.Physical.metres(radius - was)).underlying
+                        let outUp = wasUp / was
+                        let outAcross = wasAcross / was
+                        let movedUp = ups[index] - fromUp - twice * finger.speed.up.underlying
+                        let movedAcross = acrosses[index] - fromAcross - twice * finger.speed.across.underlying
+                        let damping = finger.damping.underlying * push / twice
+                        let normal = movedUp * outUp + movedAcross * outAcross
+                        let slide = movedAcross * outUp - movedUp * outAcross
+                        r[at] += slack * damping * normal * outUp
+                        r[at + 1] += slack * damping * normal * outAcross
+                        add(&m, at, at, slack * damping * outUp * outUp)
+                        add(&m, at + 1, at + 1, slack * damping * outAcross * outAcross)
+                        if finger.friction > .zero, push > 0, finger.creep > .zero {
                             sites.append(
                                 Site(
                                     first: at + 1,
                                     second: at,
-                                    along: 1,
-                                    besides: 0,
-                                    slid: acrosses[index] - fromAcross,
-                                    most: board.friction.underlying * push,
-                                    creep: twice * board.creep.underlying
+                                    along: outUp,
+                                    besides: -outAcross,
+                                    slid: slide,
+                                    most: finger.friction.underlying * push,
+                                    creep: twice * finger.creep.underlying
                                 )
                             )
                         }
+                        let both = slack * damping * outUp * outAcross
+                        add(&m, at, at + 1, both)
+                        add(&m, at + 1, at, both)
                     }
-                }
-                guard let press else { continue }
-                // The flesh on the node.
-                let finger = fingers[press.finger]
-                let radius = finger.radius.underlying
-                let contact = finger.contact
-                let share = press.share
-                let nowUp = ups[index] - finger.centre.up.underlying
-                let nowAcross = acrosses[index] - finger.centre.across.underlying
-                let wasUp = fromUp - finger.centre.up.underlying
-                let wasAcross = fromAcross - finger.centre.across.underlying
-                let now = (nowUp * nowUp + nowAcross * nowAcross).squareRoot()
-                let was = (wasUp * wasUp + wasAcross * wasAcross).squareRoot()
-                if now < radius || was < radius, now + was > 0 {
-                    touching = true
-                    let mean = Self.mean(
-                        radius - now,
-                        radius - was,
-                        { share * contact.energy(pressed: Space.Physical.metres($0)).underlying },
-                        { share * contact.force(pressed: Space.Physical.metres($0)).underlying },
-                        { $0 > 0 ? contact.exponent * share * contact.force(pressed: Space.Physical.metres($0)).underlying / $0 : 0 }
-                    )
-                    // WHY: what the flesh stores falls as the node moves away from the tip's centre, by `mean` over the
-                    // change of that distance; the change of the distance is the sum of the two places over the sum of
-                    // the two distances, dotted with the move.
-                    let sum = now + was
-                    let outUp = (nowUp + wasUp) / sum
-                    let outAcross = (nowAcross + wasAcross) / sum
-                    miss[at] -= slack * mean.value * outUp
-                    miss[at + 1] -= slack * mean.value * outAcross
-                    let towardUp = now > 0 ? nowUp / now : 0
-                    let towardAcross = now > 0 ? nowAcross / now : 0
-                    let firm = slack * mean.slope * 2 * half
-                    let soft = slack * mean.value * 2 * half / sum
-                    add(at, at, firm * outUp * towardUp - soft * (1 - outUp * towardUp))
-                    add(at, at + 1, firm * outUp * towardAcross + soft * outUp * towardAcross)
-                    add(at + 1, at, firm * outAcross * towardUp + soft * outAcross * towardUp)
-                    add(at + 1, at + 1, firm * outAcross * towardAcross - soft * (1 - outAcross * towardAcross))
-                }
-                if lossy, was < radius, was > 0, finger.damping > .zero || finger.friction > .zero {
-                    let push = share * contact.force(pressed: Space.Physical.metres(radius - was)).underlying
-                    let outUp = wasUp / was
-                    let outAcross = wasAcross / was
-                    let movedUp = ups[index] - fromUp - twice * finger.speed.up.underlying
-                    let movedAcross = acrosses[index] - fromAcross - twice * finger.speed.across.underlying
-                    let damping = finger.damping.underlying * push / twice
-                    let normal = movedUp * outUp + movedAcross * outAcross
-                    let slide = movedAcross * outUp - movedUp * outAcross
-                    miss[at] += slack * damping * normal * outUp
-                    miss[at + 1] += slack * damping * normal * outAcross
-                    add(at, at, slack * damping * outUp * outUp)
-                    add(at + 1, at + 1, slack * damping * outAcross * outAcross)
-                    if finger.friction > .zero, push > 0, finger.creep > .zero {
-                        sites.append(
-                            Site(
-                                first: at + 1,
-                                second: at,
-                                along: outUp,
-                                besides: -outAcross,
-                                slid: slide,
-                                most: finger.friction.underlying * push,
-                                creep: twice * finger.creep.underlying
-                            )
-                        )
-                    }
-                    let both = slack * damping * outUp * outAcross
-                    add(at, at + 1, both)
-                    add(at + 1, at, both)
                 }
             }
             var worst = 0.0
-            for value in miss { worst = Swift.max(worst, value.magnitude) }
-            return worst
+            for index in 0..<r.count { worst = Swift.max(worst, r[index].magnitude) }
+            return (worst, touching)
         }
 
         /// Banded elimination without pivoting, the multipliers kept: the masses' and the springs' rule the matrix.
-        func factor() {
+        ///
+        /// WHY: only a pivot row's entries that aren't zero are taken off the rows below. That leaves every bit as it
+        /// was: no entry is ever −0 (each starts at +0 and is only summed and differenced), so taking off a zero
+        /// product changed nothing.
+        func factor(_ matrix: inout [Double]) {
+            var m = matrix.mutableSpan
+            var nonzero = columns.mutableSpan
             for pivot in 0..<unknowns {
-                let diagonal = matrix[pivot * row + band]
+                // WHY: row `i`'s entry in column `j` is at `i × (row − 1) + band + j`.
+                let pivots = pivot * (row - 1) + band
+                let diagonal = m[pivots + pivot]
                 let reach = Swift.min(unknowns - 1, pivot + band)
                 guard pivot < reach else { continue }
-                for lower in (pivot + 1)...reach {
-                    let entry = matrix[lower * row + pivot - lower + band]
+                var count = 0
+                for column in (pivot + 1)..<(reach + 1) where plain || m[pivots + column] != 0 {
+                    nonzero[count] = pivots &+ column
+                    count &+= 1
+                }
+                for lower in (pivot + 1)..<(reach + 1) {
+                    let lowers = lower * (row - 1) + band
+                    let entry = m[lowers + pivot]
                     guard entry != 0 else { continue }
                     let factor = entry / diagonal
-                    matrix[lower * row + pivot - lower + band] = factor
-                    for column in (pivot + 1)...reach {
-                        matrix[lower * row + column - lower + band] -= factor * matrix[pivot * row + column - pivot + band]
+                    m[lowers + pivot] = factor
+                    let shift = lowers - pivots
+                    for which in 0..<count {
+                        let above = nonzero[which]
+                        m[above &+ shift] -= factor * m[above]
                     }
                 }
             }
         }
-        /// The factored matrix's answer to `right`, in place.
-        func through(_ right: inout [Double]) {
+        /// The factored `matrix`'s answer to `right`, in place.
+        func through(_ matrix: [Double], _ right: inout [Double]) {
+            var r = right.mutableSpan
+            through(matrix.span, &r, from: 0)
+        }
+        /// The same for the `unknowns` entries of `r` from `base` on.
+        func through(_ m: Span<Double>, _ r: inout MutableSpan<Double>, from base: Int) {
             for pivot in 0..<unknowns {
                 let reach = Swift.min(unknowns - 1, pivot + band)
-                guard pivot < reach, right[pivot] != 0 else { continue }
-                for lower in (pivot + 1)...reach {
-                    right[lower] -= matrix[lower * row + pivot - lower + band] * right[pivot]
+                let value = r[base + pivot]
+                guard pivot < reach, value != 0 else { continue }
+                // WHY: row `lower`'s entry in column `pivot` is at `lower × (row − 1) + band + pivot`.
+                var entry = (pivot + 1) * (row - 1) + band + pivot
+                for lower in (base + pivot + 1)..<(base + reach + 1) {
+                    r[lower] -= m[entry] * value
+                    entry &+= row &- 1
                 }
             }
             var pivot = unknowns - 1
             while pivot >= 0 {
-                var sum = right[pivot]
+                var sum = r[base + pivot]
                 let reach = Swift.min(unknowns - 1, pivot + band)
+                let pivots = pivot * (row - 1) + band
                 if pivot < reach {
-                    for column in (pivot + 1)...reach {
-                        sum -= matrix[pivot * row + column - pivot + band] * right[column]
+                    let shift = base - pivots
+                    for entry in (pivots + pivot + 1)..<(pivots + reach + 1) {
+                        sum -= m[entry] * r[entry &+ shift]
                     }
                 }
-                right[pivot] = sum / matrix[pivot * row + band]
+                r[base + pivot] = sum / m[pivots + pivot]
                 pivot -= 1
             }
         }
-        var saved = matrix
-        var savedMiss = miss
-        var change = miss
         /// Whether anything touches a vertex, now or two steps before.
         func touches() -> Bool {
+            let ups = ups.span
+            let acrosses = acrosses.span
             for index in 0..<total where unknown[index] >= 0 {
                 let vertex = vertices[index]
                 let fromUp = resting ? ups[index] : from.up[index]
@@ -702,6 +952,7 @@ extension Acoustics.String {
             return false
         }
         var wasLinear = false
+        var untouched = false
         var lastSize = Double.infinity
         var rounds = 0
         var scale = 0x1p-30
@@ -711,10 +962,10 @@ extension Acoustics.String {
             rounds += 1
             // WHY: where nothing touches, the region's matrix is its springs' alone, the same step after step while the
             // tips stay where they are along the string; one step of it is the answer.
-            let untouched = !touches()
+            untouched = !touches()
             if untouched, wasLinear { break }
             building = !(untouched && factored.count == matrix.count)
-            let worst = assemble()
+            let (worst, touching) = assemble(&matrix, &miss, &sites, &middleUp, &middleAcross)
             if worst == 0 { break }
             let linear = !touching && sites.isEmpty
             wasLinear = linear
@@ -723,30 +974,34 @@ extension Acoustics.String {
             if !sites.isEmpty {
                 saved.replaceSubrange(saved.indices, with: matrix)
                 savedMiss.replaceSubrange(savedMiss.indices, with: miss)
+                var m = matrix.mutableSpan
+                var r = miss.mutableSpan
                 for site in sites {
                     if site.slid.magnitude <= site.creep || rounds == 1 {
                         let firm = slack * site.most / site.creep
-                        miss[site.first] += firm * site.slid * site.along
-                        miss[site.second] += firm * site.slid * site.besides
-                        add(site.first, site.first, firm * site.along * site.along)
-                        add(site.first, site.second, firm * site.along * site.besides)
-                        add(site.second, site.first, firm * site.besides * site.along)
-                        add(site.second, site.second, firm * site.besides * site.besides)
+                        r[site.first] += firm * site.slid * site.along
+                        r[site.second] += firm * site.slid * site.besides
+                        if building {
+                            m[at(site.first, site.first)] += firm * site.along * site.along
+                            m[at(site.first, site.second)] += firm * site.along * site.besides
+                            m[at(site.second, site.first)] += firm * site.besides * site.along
+                            m[at(site.second, site.second)] += firm * site.besides * site.besides
+                        }
                     } else {
                         let push = slack * (site.slid > 0 ? site.most : -site.most)
-                        miss[site.first] += push * site.along
-                        miss[site.second] += push * site.besides
+                        r[site.first] += push * site.along
+                        r[site.second] += push * site.besides
                     }
                 }
             }
-            if linear, factored.count == matrix.count {
-                matrix.replaceSubrange(matrix.indices, with: factored)
-            } else {
-                factor()
+            // WHY: a kept factoring is solved with where it is kept; nothing reads the matrix after an untouched step.
+            let reused = linear && factored.count == matrix.count
+            if !reused {
+                factor(&matrix)
                 if linear { factored = matrix }
             }
             change.replaceSubrange(change.indices, with: miss)
-            through(&change)
+            through(reused ? factored : matrix, &change)
             for index in change.indices { change[index] = -change[index] }
             var kept = true
             for site in sites {
@@ -763,40 +1018,50 @@ extension Acoustics.String {
                 // holding and sliding.
                 matrix.replaceSubrange(matrix.indices, with: saved)
                 miss.replaceSubrange(miss.indices, with: savedMiss)
-                factor()
+                factor(&matrix)
                 change.replaceSubrange(change.indices, with: miss)
-                through(&change)
+                through(matrix, &change)
                 for index in change.indices { change[index] = -change[index] }
                 let count = sites.count
-                var reaches = [[Double]](repeating: [], count: count)
+                // WHY: each friction's reach, how the unknowns move for a unit of its push, one after another.
+                Self.fill(&reaches, 0, count * unknowns)
                 var free = [Double](repeating: 0, count: count)
                 var weights = [Double](repeating: 0, count: count * count)
-                for (k, site) in sites.enumerated() {
-                    var column = [Double](repeating: 0, count: unknowns)
-                    column[site.first] = slack * site.along
-                    column[site.second] += slack * site.besides
-                    through(&column)
-                    reaches[k] = column
-                    free[k] = site.slid + site.along * change[site.first] + site.besides * change[site.second]
+                do {
+                    let m = matrix.span
+                    var all = reaches.mutableSpan
+                    for (k, site) in sites.enumerated() {
+                        let base = k * unknowns
+                        all[base + site.first] = slack * site.along
+                        all[base + site.second] += slack * site.besides
+                        through(m, &all, from: base)
+                        free[k] = site.slid + site.along * change[site.first] + site.besides * change[site.second]
+                    }
                 }
                 for (k, site) in sites.enumerated() {
                     for j in 0..<count {
-                        weights[k * count + j] = site.along * reaches[j][site.first] + site.besides * reaches[j][site.second]
+                        let reach = j * unknowns
+                        weights[k * count + j] =
+                            site.along * reaches[reach + site.first] + site.besides * reaches[reach + site.second]
                     }
                 }
                 let pushes = Self.box(weights, free, sites)
                 for k in 0..<count where pushes[k] != 0 {
-                    for index in 0..<unknowns { change[index] -= reaches[k][index] * pushes[k] }
+                    for index in 0..<unknowns { change[index] -= reaches[k * unknowns + index] * pushes[k] }
                 }
             }
             var size = 0.0
-            for index in 0..<total {
-                scale = Swift.max(scale, ups[index].magnitude, acrosses[index].magnitude)
-                let at = unknown[index]
-                guard at >= 0 else { continue }
-                ups[index] += change[at]
-                acrosses[index] += change[at + 1]
-                size = Swift.max(size, change[at].magnitude, change[at + 1].magnitude)
+            do {
+                var u = ups.mutableSpan
+                var a = acrosses.mutableSpan
+                for index in 0..<total {
+                    scale = Swift.max(scale, u[index].magnitude, a[index].magnitude)
+                    let at = unknown[index]
+                    guard at >= 0 else { continue }
+                    u[index] += change[at]
+                    a[index] += change[at + 1]
+                    size = Swift.max(size, change[at].magnitude, change[at + 1].magnitude)
+                }
             }
             // WHY: done once a step moves nothing past the last bits, or once rounding stops it shrinking.
             let previous = lastSize
@@ -805,7 +1070,23 @@ extension Acoustics.String {
             if size <= 0x1p-40 * scale, size > previous / 8 { break }
             if rounds > 6, size >= previous { break }
         }
-        return (ups, acrosses)
+    }
+
+    /// Sets `array` to `count` copies of `value`, keeping what it has room for.
+    @usableFromInline
+    static func fill<Element>(_ array: inout [Element], _ value: Element, _ count: Int) {
+        array.removeAll(keepingCapacity: true)
+        array.append(contentsOf: repeatElement(value, count: count))
+    }
+
+    /// Makes `array` `count` long, keeping what it holds where it can and adding zeros.
+    @usableFromInline
+    static func size<Element: Swift.Numeric>(_ array: inout [Element], _ count: Int) {
+        if array.count > count {
+            array.removeLast(array.count - count)
+        } else if array.count < count {
+            array.append(contentsOf: repeatElement(.zero, count: count - array.count))
+        }
     }
 
     /// The mean slope of a store `energy` between being pressed `now` and `was`, and its slope in `now`.
@@ -859,7 +1140,7 @@ extension Acoustics.String {
                 // Cholesky, in place.
                 var positive = true
                 for i in 0..<size where positive {
-                    for l in 0...i {
+                    for l in 0..<(i + 1) {
                         var sum = system[i * size + l]
                         for m in 0..<l { sum -= system[i * size + m] * system[l * size + m] }
                         if i == l {
