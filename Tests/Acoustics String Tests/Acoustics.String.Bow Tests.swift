@@ -125,8 +125,7 @@ extension `Acoustics Tests`.Bow {
     /// rounds the corner over a few steps, so the slip is allowed five steps more or less, and to be up to a quarter
     /// slower.
     @Test(.enabled(if: `Acoustics Tests`.String.optimized), arguments: [(0.08, 0.2), (0.1, 0.1), (0.125, 0.3)])
-    func `Bowed between Schelleng's forces, the string moves in Helmholtz motion`(bowing: (beta: Double, speed: Double))
-    {
+    func `Between Schelleng's forces the string moves in Helmholtz motion`(bowing: (beta: Double, speed: Double)) {
         let force = 0.6 * Self.most(speed: bowing.speed, beta: bowing.beta)
         let bowed = Self.bow(force: force, speed: bowing.speed, beta: bowing.beta, seconds: 0.5)
         #expect(bowed.finite)
