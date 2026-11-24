@@ -29,9 +29,12 @@ extension Acoustics {
         @usableFromInline var up: Line
         @usableFromInline var across: Line
         @usableFromInline var top: [Double]
-        @usableFromInline var low: [Int] = []
-        @usableFromInline var high: [Int] = []
-        @usableFromInline var share: [Double] = []
+        /// Where the string is under each press of the fingers, now and a step before: up and across, by press.
+        @usableFromInline var held: [Double] = []
+        /// How many presses each finger had when `held` was kept.
+        @usableFromInline var pattern: [Int] = []
+        /// Each region's factored matrix where nothing touches it, by where its vertices are.
+        @usableFromInline var factorings: [(places: [Double], matrix: [Double])] = []
 
         /// A string that loses what physics says it loses: to the air, and inside its material.
         ///
@@ -251,6 +254,7 @@ extension Acoustics.String {
         }
         up.bent = Self.bend(up.before)
         across.bent = Self.bend(across.before)
+        pattern = []
         for part in damping.memory.indices {
             for index in up.now.indices {
                 up.kept[part * up.now.count + index] = up.now[index]
@@ -274,10 +278,13 @@ extension Acoustics.String {
         let spacing = self.spacing.underlying
         let taut = tension.underlying / spacing
         let stiff = stepped.underlying / (spacing * spacing * spacing)
+        let presses = fingers.isEmpty ? [] : presses()
+        let regions = regions(presses)
         var total = 0.0
         for line in [up, across] {
             let curve = Self.bend(line.now)
             let curved = Self.bend(line.before)
+            var region = 0
             for index in line.now.indices.dropFirst() {
                 let speed =
                     index == line.now.endIndex - 1 ? 0 : (line.now[index] - line.before[index]) / interval
@@ -285,7 +292,10 @@ extension Acoustics.String {
                 total +=
                     taut * (line.now[index] - line.now[index - 1])
                     * (line.before[index] - line.before[index - 1]) / 2
-                total += stiff * curve[index] * curved[index] / 2
+                while region < regions.count, regions[region].removed.upperBound <= index { region += 1 }
+                if region == regions.count || !regions[region].removed.contains(index) {
+                    total += stiff * curve[index] * curved[index] / 2
+                }
                 for (number, part) in damping.memory.enumerated() {
                     let kept = number * line.now.count + index
                     let strain = line.now[index] - line.now[index - 1] - line.kept[kept] + line.kept[kept - 1]
@@ -293,108 +303,67 @@ extension Acoustics.String {
                 }
             }
         }
-        let spans = fingers.map(span)
-        for index in up.now.indices.dropFirst().dropLast() {
-            total += stored(index, up.now[index], across.now[index], spans) / 2
-            total += stored(index, up.before[index], across.before[index], spans) / 2
+        // WHY: before the nodes are kept, they are where the stores balance.
+        let kept = pattern == fingers.map(samples)
+        var inside = [Bool](repeating: false, count: count + 1)
+        for region in regions {
+            for vertex in region.vertices where vertex >= 0 { inside[vertex] = true }
+            for before in [false, true] {
+                var level =
+                    vertices(region, before ? up.before : up.now, before ? across.before : across.now, before: before)
+                if !kept {
+                    var unused: [Double] = []
+                    level = solve(region, presses, from: level, toward: level, start: level, .rest, factored: &unused)
+                }
+                total += stored(region, presses, level.0, level.1) / 2
+            }
+        }
+        for index in up.now.indices.dropFirst().dropLast() where !inside[index] {
+            total += lying(index, up.now[index]) / 2
+            total += lying(index, up.before[index]) / 2
         }
         return Energy.joules(total)
     }
 }
 
 extension Acoustics.String {
-    /// Half the length of string a fingertip presses on: half its width, but never less than one spacing.
-    ///
-    /// WHY: a tip narrower than the grid would fall between points, and act on the nearest one alone, so a stopped
-    /// pitch would jump from point to point as the tip moves. Spread over at least two points, its weight passes
-    /// smoothly from one to the next.
+    /// The board's energy at point `index`, the point at `up`.
     @usableFromInline
-    func reach(_ finger: Finger) -> Double {
-        Swift.max(finger.width.underlying / 2, spacing.underlying)
+    func lying(_ index: Int, _ up: Double) -> Double {
+        guard let board, top[index] > up else { return 0 }
+        return spacing.underlying * board.contact.energy(pressed: Space.Physical.metres(top[index] - up)).underlying
     }
 
+    /// The board's push up on point `index` at `up`.
     @usableFromInline
-    func cover(_ finger: Finger, _ index: Int) -> Double {
-        let off = (Double(index) * spacing.underlying - finger.place.underlying) / reach(finger)
-        guard off.magnitude < 1 else { return 0 }
-        let rest = 1 - off * off
-        return rest * rest
+    func lifting(_ index: Int, _ up: Double) -> Double {
+        guard let board, top[index] > up else { return 0 }
+        return spacing.underlying * board.contact.force(pressed: Space.Physical.metres(top[index] - up)).underlying
     }
 
+    /// Finds where the string rests under every press, now and a step before, for fingers just set or changed.
     @usableFromInline
-    func span(_ finger: Finger) -> Span {
-        let spacing = self.spacing.underlying
-        let place = finger.place.underlying
-        let reach = reach(finger)
-        let low = Swift.max(1, Int(((place - reach) / spacing).rounded(.up)))
-        let high = Swift.min(
-            top.endIndex - 2,
-            Int(((place + reach) / spacing).rounded(.down))
-        )
-        var whole = 0.0
-        var index = low
-        while index <= high {
-            whole += cover(finger, index)
-            index += 1
-        }
-        guard whole > 0 else {
-            let nearest = Swift.min(
-                top.endIndex - 2,
-                Swift.max(1, Int((place / spacing).rounded()))
-            )
-            return Span(low: nearest, high: nearest, whole: 0)
-        }
-        return Span(low: low, high: high, whole: whole)
-    }
-
-    @usableFromInline
-    func part(_ finger: Finger, _ span: Span, _ index: Int) -> Double {
-        span.whole > 0 ? cover(finger, index) / span.whole : 1
-    }
-
-    @usableFromInline
-    func stored(_ index: Int, _ up: Double, _ across: Double, _ spans: [Span]) -> Double {
-        var total = 0.0
-        if let board, top[index] > up {
-            total +=
-                spacing.underlying * board.contact.energy(pressed: Space.Physical.metres(top[index] - up)).underlying
-        }
-        for which in fingers.indices where index >= spans[which].low && index <= spans[which].high {
-            let finger = fingers[which]
-            let rise = up - finger.centre.up.underlying
-            let side = across - finger.centre.across.underlying
-            let pressed = finger.radius.underlying - (rise * rise + side * side).squareRoot()
-            if pressed > 0 {
-                total +=
-                    part(finger, spans[which], index)
-                    * finger.contact.energy(pressed: Space.Physical.metres(pressed)).underlying
+    mutating func keep(_ presses: [Press], _ regions: [Region]) {
+        held = [Double](repeating: 0, count: 4 * presses.count)
+        for region in regions {
+            for before in [false, true] {
+                var level = vertices(
+                    region,
+                    before ? up.before : up.now,
+                    before ? across.before : across.now,
+                    before: before,
+                    straight: true
+                )
+                var unused: [Double] = []
+                level = solve(region, presses, from: level, toward: level, start: level, .rest, factored: &unused)
+                for index in region.vertices.indices where region.vertices[index] < 0 {
+                    let base = 4 * (-1 - region.vertices[index]) + (before ? 2 : 0)
+                    held[base] = level.0[index]
+                    held[base + 1] = level.1[index]
+                }
             }
         }
-        return total
-    }
-
-    /// The slope of the stored energy at a point, up and across, in newtons.
-    @usableFromInline
-    func slope(_ index: Int, _ up: Double, _ across: Double, _ spans: [Span]) -> (up: Double, across: Double) {
-        var total = (up: 0.0, across: 0.0)
-        if let board, top[index] > up {
-            total.up -=
-                spacing.underlying * board.contact.force(pressed: Space.Physical.metres(top[index] - up)).underlying
-        }
-        for which in fingers.indices where index >= spans[which].low && index <= spans[which].high {
-            let finger = fingers[which]
-            let radius = finger.radius.underlying
-            let rise = up - finger.centre.up.underlying
-            let side = across - finger.centre.across.underlying
-            let away = (rise * rise + side * side).squareRoot()
-            guard radius > away, away > 0 else { continue }
-            let push =
-                part(finger, spans[which], index)
-                * finger.contact.force(pressed: Space.Physical.metres(radius - away)).underlying
-            total.up -= push * rise / away
-            total.across -= push * side / away
-        }
-        return total
+        pattern = fingers.map(samples)
     }
 
     /// Steps the string once, with the bridge end moved to `end`.
@@ -413,35 +382,83 @@ extension Acoustics.String {
         across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
         let mass = density * spacing * (1 + steady)
         let slack = step / mass
-        let spans = fingers.map(span)
+        let presses = fingers.isEmpty ? [] : presses()
+        let regions = regions(presses)
+        var inside = [Bool](repeating: false, count: regions.isEmpty ? 0 : count + 1)
+        if !regions.isEmpty {
+            up.ahead[count] = end.up.underlying
+            across.ahead[count] = end.across.underlying
+            if pattern != fingers.map(samples) { keep(presses, regions) }
+            // WHY: a region bends its own points; the grid's bending there comes out of the step.
+            let shared = 1 + steady
+            for region in regions {
+                for vertex in region.vertices where vertex >= 0 { inside[vertex] = true }
+                for index in region.removed {
+                    let upCurve = up.bend[index] * stiff / shared
+                    let acrossCurve = across.bend[index] * stiff / shared
+                    up.ahead[index - 1] += upCurve
+                    up.ahead[index] -= 2 * upCurve
+                    up.ahead[index + 1] += upCurve
+                    across.ahead[index - 1] += acrossCurve
+                    across.ahead[index] -= 2 * acrossCurve
+                    across.ahead[index + 1] += acrossCurve
+                }
+            }
+            up.ahead[0] = 0
+            across.ahead[0] = 0
+            up.ahead[count] = end.up.underlying
+            across.ahead[count] = end.across.underlying
+        }
         if board != nil {
             var index = 1
             while index < count {
-                if top[index] > up.ahead[index] || top[index] > up.before[index] {
-                    settle(index, mass, slack, spans)
+                if inside.isEmpty || !inside[index], top[index] > up.ahead[index] || top[index] > up.before[index] {
+                    settle(index, mass, slack)
                 }
                 index += 1
             }
         }
-        for which in fingers.indices {
-            var index = spans[which].low
-            while index <= spans[which].high {
-                let boarded =
-                    board != nil && (top[index] > up.ahead[index] || top[index] > up.before[index])
-                let earlier = fingers.indices.prefix(which).contains {
-                    index >= spans[$0].low && index <= spans[$0].high
-                }
-                if !boarded, !earlier { settle(index, mass, slack, spans) }
-                index += 1
+        if !regions.isEmpty {
+            var next = held
+            for press in presses.indices {
+                next[4 * press + 2] = held[4 * press]
+                next[4 * press + 3] = held[4 * press + 1]
             }
+            var kept: [(places: [Double], matrix: [Double])] = []
+            for region in regions {
+                let from = vertices(region, up.before, across.before, before: true)
+                let toward = vertices(region, up.ahead, across.ahead, before: false)
+                var start = toward
+                for index in region.vertices.indices where region.vertices[index] < 0 {
+                    // WHY: a node starts from where it would coast.
+                    start.0[index] = 2 * start.0[index] - from.0[index]
+                    start.1[index] = 2 * start.1[index] - from.1[index]
+                }
+                // WHY: a region's matrix where nothing touches is kept while its vertices stay where they are.
+                var factored = factorings.first { $0.places == region.places }?.matrix ?? []
+                let ahead = solve(region, presses, from: from, toward: toward, start: start, .step(slack: slack), factored: &factored)
+                if !factored.isEmpty { kept.append((region.places, factored)) }
+                for index in region.vertices.indices {
+                    let vertex = region.vertices[index]
+                    if vertex > 0, vertex < count {
+                        up.ahead[vertex] = ahead.0[index]
+                        across.ahead[vertex] = ahead.1[index]
+                    } else if vertex < 0 {
+                        next[4 * (-1 - vertex)] = ahead.0[index]
+                        next[4 * (-1 - vertex) + 1] = ahead.1[index]
+                    }
+                }
+            }
+            held = next
+            factorings = kept
         }
         up.turn(end: end.up.underlying, follows: follows)
         across.turn(end: end.across.underlying, follows: follows)
     }
 
-    /// Lets what is stored at one point push it, then takes the losses of whatever it touches.
+    /// Lets the board push a point it lies on, then takes the board's losses at the point.
     @usableFromInline
-    mutating func settle(_ index: Int, _ mass: Double, _ slack: Double, _ spans: [Span]) {
+    mutating func settle(_ index: Int, _ mass: Double, _ slack: Double) {
         let interval = self.interval.underlying
         let wasUp = up.before[index]
         let wasAcross = across.before[index]
@@ -450,20 +467,11 @@ extension Acoustics.String {
             toward: Space.Physical.metres(up.ahead[index]),
             mass: Mass.kilograms(mass),
             every: self.interval,
-            energy: { Energy.joules(stored(index, $0.underlying, wasAcross, spans)) },
-            slope: { Force.newtons(slope(index, $0.underlying, wasAcross, spans).up) }
+            energy: { Energy.joules(lying(index, $0.underlying)) },
+            slope: { Force.newtons(-lifting(index, $0.underlying)) }
         ).underlying
-        var nextAcross = Contact.settle(
-            from: Space.Physical.metres(wasAcross),
-            toward: Space.Physical.metres(across.ahead[index]),
-            mass: Mass.kilograms(mass),
-            every: self.interval,
-            energy: { Energy.joules(stored(index, nextUp, $0.underlying, spans)) },
-            slope: { Force.newtons(slope(index, nextUp, $0.underlying, spans).across) }
-        ).underlying
-        if let board, top[index] > nextUp, board.friction > .zero || board.damping > .zero {
-            let push =
-                spacing.underlying * board.contact.force(pressed: Space.Physical.metres(top[index] - nextUp)).underlying
+        var nextAcross = across.ahead[index]
+        if let board, board.friction > .zero || board.damping > .zero, case let push = lifting(index, nextUp), push > 0 {
             let drag = slack * push / (2 * interval)
             nextUp = wasUp + (nextUp - wasUp) / (1 + drag * board.damping.underlying)
             nextAcross =
@@ -473,33 +481,6 @@ extension Acoustics.String {
                     slack * push * board.friction.underlying,
                     2 * interval * board.creep.underlying
                 )
-        }
-        for which in fingers.indices where index >= spans[which].low && index <= spans[which].high {
-            let finger = fingers[which]
-            guard finger.friction > .zero || finger.damping > .zero else { continue }
-            let radius = finger.radius.underlying
-            let speedUp = finger.speed.up.underlying
-            let speedAcross = finger.speed.across.underlying
-            let rise = nextUp - finger.centre.up.underlying
-            let side = nextAcross - finger.centre.across.underlying
-            let away = (rise * rise + side * side).squareRoot()
-            guard radius > away, away > 0 else { continue }
-            let push =
-                part(finger, spans[which], index)
-                * finger.contact.force(pressed: Space.Physical.metres(radius - away)).underlying
-            let drag = slack * push / (2 * interval)
-            let outUp = rise / away
-            let outAcross = side / away
-            let movedUp = nextUp - wasUp - 2 * interval * speedUp
-            let movedAcross = nextAcross - wasAcross - 2 * interval * speedAcross
-            let out = (movedUp * outUp + movedAcross * outAcross) / (1 + drag * finger.damping.underlying)
-            let along = Self.rub(
-                movedAcross * outUp - movedUp * outAcross,
-                slack * push * finger.friction.underlying,
-                2 * interval * finger.creep.underlying
-            )
-            nextUp = wasUp + 2 * interval * speedUp + out * outUp - along * outAcross
-            nextAcross = wasAcross + 2 * interval * speedAcross + out * outAcross + along * outUp
         }
         up.ahead[index] = nextUp
         across.ahead[index] = nextAcross

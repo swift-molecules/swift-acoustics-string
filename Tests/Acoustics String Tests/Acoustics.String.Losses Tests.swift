@@ -284,29 +284,42 @@ extension `Acoustics Tests`.Fingers {
                 contact: `Acoustics Tests`.flesh
             )
         ]
-        let spans = string.fingers.map(string.span)
-        return (0...string.count).map { index in
-            guard index > 0, index < string.count else { return 0 }
-            return abs(string.slope(index, 0, 0, spans).up)
+        let presses = string.presses()
+        var pushes = [Double](repeating: 0, count: string.count + 1)
+        let flat = [Double](repeating: 0, count: string.count + 1)
+        for region in string.regions(presses) {
+            var level = string.vertices(region, flat, flat, before: false, straight: true)
+            var unused: [Double] = []
+            level = string.solve(region, presses, from: level, toward: level, start: level, .rest, factored: &unused)
+            // WHY: the nodes balance, so a point's push is the store's slope at it with the nodes held.
+            for index in region.vertices.indices where region.vertices[index] > 0 {
+                var raised = level.0
+                var lowered = level.0
+                raised[index] += 1e-9
+                lowered[index] -= 1e-9
+                let slope =
+                    (string.stored(region, presses, raised, level.1) - string.stored(region, presses, lowered, level.1))
+                    / 2e-9
+                pushes[region.vertices[index]] += slope
+            }
         }
+        return pushes
     }
 
-    @Test func `A fingertip narrower than the grid hands its push smoothly from one point to the next as it slides`() {
+    @Test(arguments: [0.25, 1, 5.8])
+    func `A fingertip's push on the points is centred where the tip is, as it slides between them`(widths: Double) {
         let spacing = `Acoustics Tests`.string(losses: .none).spacing.underlying
         let point = Int((0.30 / spacing).rounded())
-        var shares: [Double] = []
         for quarter in 0...4 {
-            let pushes = Self.pushes(at: (Double(point) + Double(quarter) / 4) * spacing, width: spacing / 2)
+            let place = (Double(point) + Double(quarter) / 4) * spacing
+            let pushes = Self.pushes(at: place, width: widths * spacing)
             let total = pushes.reduce(0, +)
             #expect(total > 0)
-            #expect(pushes.indices.allSatisfy { pushes[$0] == 0 || $0 == point || $0 == point + 1 })
-            shares.append(pushes[point + 1] / total)
-        }
-        #expect(shares[0] < 1e-12)
-        #expect(shares[4] > 1 - 1e-12)
-        for index in shares.indices.dropFirst() {
-            #expect(shares[index] - shares[index - 1] > 0.1, "\(shares)")
-            #expect(shares[index] - shares[index - 1] < 0.5, "\(shares)")
+            let centre = pushes.indices.reduce(0) { $0 + Double($1) * spacing * pushes[$1] } / total
+            #expect(abs(centre - place) < 0.01 * spacing, "\(quarter): \((centre - place) / spacing)")
+            #expect(
+                pushes.indices.allSatisfy { abs(pushes[$0]) < 1e-9 * total || abs(Double($0) * spacing - place) < (widths / 2 + 3) * spacing }
+            )
         }
     }
 }

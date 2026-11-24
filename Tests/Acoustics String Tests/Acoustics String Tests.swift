@@ -311,14 +311,35 @@ extension `Acoustics Tests`.String {
             if now >= 0.08 { kept = max(kept, abs(here)) }
             if now > 0.12 { trace.append(here) }
         }
-        var crossings: [Double] = []
-        for index in trace.indices.dropFirst() where trace[index - 1] < 0 && trace[index] >= 0 {
-            crossings.append(Double(index) - trace[index] / (trace[index] - trace[index - 1]))
+        return (pulled, kept, Self.pitch(trace, near: 102.02 * 1.06 / (1.06 - (stop ?? 0))))
+    }
+
+    /// The lowest pitch in `trace`, within a fifth of `near`: the lag where the trace best matches itself.
+    ///
+    /// WHY: counting zero crossings counts the upper partials' too, and a stop shifts how many there are.
+    static func pitch(_ trace: [Double], near: Double) -> Double {
+        let interval = `Acoustics Tests`.interval
+        let shortest = Int(1 / (near * 1.5 * interval))
+        let longest = Int(1 / (near / 1.5 * interval)) + 1
+        guard trace.count > 2 * longest else { return 0 }
+        let span = trace.count - longest - 1
+        func match(_ lag: Int) -> Double {
+            var both = 0.0
+            var first = 0.0
+            var second = 0.0
+            for index in 0..<span {
+                both += trace[index] * trace[index + lag]
+                first += trace[index] * trace[index]
+                second += trace[index + lag] * trace[index + lag]
+            }
+            return both / (first * second).squareRoot()
         }
-        let heard =
-            crossings.count > 1
-            ? Double(crossings.dropLast().count) / ((crossings[crossings.endIndex - 1] - crossings[0]) * interval) : 0
-        return (pulled, kept, heard)
+        let matches = (shortest - 1...longest + 1).map(match)
+        var best = 1
+        for index in 1..<(matches.count - 1) where matches[index] > matches[best] { best = index }
+        let bend = matches[best - 1] - 2 * matches[best] + matches[best + 1]
+        let shift = bend < 0 ? (matches[best - 1] - matches[best + 1]) / (2 * bend) : 0
+        return 1 / ((Double(shortest - 1 + best) + shift) * interval)
     }
 
     @Test func `A fingertip drawn across pulls the string along, then the string slips off and rings`() {
@@ -410,5 +431,26 @@ extension `Acoustics Tests`.String {
         #expect(D.of(Viscosity.Kinematic.self) * wavenumber * wavenumber == D.of(Decay::Decay.self))
         // a point of the grid: linear density times spacing is a mass
         #expect(D.of(Density.Linear.self) * length == D.of(Mass.self))
+    }
+}
+
+extension `Acoustics Tests`.String {
+    /// swift-molecules/swift-acoustics-string#1: a stopped pitch moved a grid spacing at a time.
+    ///
+    /// A 14 mm tip, as the instruments' are, rises within a fifth of what each quarter spacing is due. A 1.2 mm tip
+    /// holds the string across by friction over little more than a spacing, so the board's grip at the points still
+    /// shows; it stays within half and twice.
+    @Test(arguments: [(0.014, 0.2), (0.0012, 0.5)])
+    func `A stopped pitch rises smoothly as a fingertip moves, not a grid spacing at a time`(tip: (width: Double, off: Double)) {
+        let spacing = `Acoustics Tests`.string().spacing.underlying
+        let heard = (0...8).map { quarter in
+            Self.plucked(stop: 0.30 + Double(quarter) * spacing / 4, width: tip.width, lasting: 0.45).heard
+        }
+        let rises = zip(heard, heard.dropFirst()).map { 1_200 * log2($1 / $0) }
+        let due = 1_200 * log2((1.06 - 0.30) / (1.06 - 0.30 - spacing / 4))
+        for rise in rises {
+            #expect(rise > due * (1 - tip.off), "\(rises) against \(due)")
+            #expect(rise < due / (1 - tip.off), "\(rises) against \(due)")
+        }
     }
 }
