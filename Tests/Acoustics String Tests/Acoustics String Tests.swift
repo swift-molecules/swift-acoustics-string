@@ -1,4 +1,3 @@
-import Acoustics_Resonator
 import Acoustics_String
 import Wavenumber
 import Foundation
@@ -189,24 +188,27 @@ extension `Acoustics Tests`.String {
         #expect(last < 0.9 * start)
     }
 
-    @Test func `A string and the body it pulls on keep their energy together`() {
+    @Test func `Strings and the body they pull at one bridge keep their energy together`() {
         var string = `Acoustics Tests`.string()
-        var body = Acoustics.Resonator(
-            [(98.0, 1.0, 0.3), (183.0, -0.8, 0.9), (412.0, 0.5, -0.7), (1_530.0, 0.9, 0.4)].map {
-                .init(frequency: Frequency.hertz($0.0), decay: 0, mass: 0.4, reach: 0, driven: [$0.1, $0.2])
-            },
-            every: Time.Duration.seconds(`Acoustics Tests`.interval)
-        )
         string.displace(`Acoustics Tests`.pulled(.init(up: 0.004, across: 0.007), at: 0.86))
-        let start = (string.energy + body.energy).underlying
+        var other = `Acoustics Tests`.string()
+        other.displace(`Acoustics Tests`.pulled(.init(up: -0.002, across: 0.003), at: 0.5))
+        var bridge = Acoustics.String.Bridge(
+            strings: [string, other],
+            body: Acoustics.Resonator(
+                [(98.0, 1.0, 0.3), (183.0, -0.8, 0.9), (412.0, 0.5, -0.7), (1_530.0, 0.9, 0.4)].map {
+                    .init(frequency: Frequency.hertz($0.0), decay: 0, mass: 0.4, reach: 0, driven: [$0.1, $0.2])
+                },
+                every: Time.Duration.seconds(`Acoustics Tests`.interval)
+            )
+        )
+        let start = bridge.energy.underlying
         var worst = 0.0
         var moved = 0.0
         (0..<40_000).forEach { _ in
-            let pull = string.pull
-            body.advance(driven: [pull.up, pull.across])
-            string.advance(end: .init(up: body.felt[0], across: body.felt[1]))
-            worst = max(worst, abs((string.energy + body.energy).underlying - start))
-            moved = max(moved, abs(body.felt[0].underlying))
+            bridge.advance()
+            worst = max(worst, abs(bridge.energy.underlying - start))
+            moved = max(moved, abs(bridge.body.felt[0].underlying))
         }
         #expect(moved > 1e-6)
         #expect(worst / start < 1e-9)

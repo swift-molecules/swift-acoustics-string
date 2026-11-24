@@ -34,6 +34,7 @@ let package = Package(
             name: "Acoustics String",
             dependencies: [
                 .product(name: "Acoustics", package: "swift-acoustics"),
+                .product(name: "Acoustics Resonator", package: "swift-acoustics-resonator"),
                 .product(name: "Contact", package: "swift-contact"),
                 .product(name: "Decay", package: "swift-decay"),
                 .product(name: "Density", package: "swift-density"),
@@ -50,7 +51,6 @@ let package = Package(
         .testTarget(
             name: "Acoustics String Tests",
             dependencies: [
-                .product(name: "Acoustics Resonator", package: "swift-acoustics-resonator"),
                 .product(name: "Wavenumber", package: "swift-wavenumber"),
                 .target(name: "Acoustics String"),
             ]

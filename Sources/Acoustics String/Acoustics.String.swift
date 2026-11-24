@@ -16,6 +16,9 @@ extension Acoustics {
         /// high partials is cancelled and they sound where the stiff string's law puts them.
         @usableFromInline let stepped: Rigidity.Flexural.Value<Double>
         @usableFromInline let damping: Damping
+        /// Each memory part's pull and how far its copy follows the string, per step.
+        @usableFromInline let pulls: [Double]
+        @usableFromInline let follows: [Double]
         public let interval: Time.Duration.Value<Double>
         /// The distance between neighbouring points.
         public let spacing: Length<Space.Physical, Double>
@@ -138,6 +141,9 @@ extension Acoustics {
             self.count = grid.count
             let spacing = length / Double(count)
             self.spacing = Space.Physical.metres(spacing)
+            let step = interval.underlying * interval.underlying
+            self.pulls = damping.memory.map { $0.strength * step / (spacing * spacing) }
+            self.follows = damping.memory.map { 1 - Double.math.exp(-interval.underlying / $0.time) }
             self.up = Line(count + 1, memory: damping.memory.count)
             self.across = Line(count + 1, memory: damping.memory.count)
             self.top = (0...count).map { index in
@@ -245,9 +251,11 @@ extension Acoustics.String {
         }
         up.bent = Self.bend(up.before)
         across.bent = Self.bend(across.before)
-        for part in up.kept.indices {
-            up.kept[part] = up.now
-            across.kept[part] = across.now
+        for part in damping.memory.indices {
+            for index in up.now.indices {
+                up.kept[part * up.now.count + index] = up.now[index]
+                across.kept[part * across.now.count + index] = across.now[index]
+            }
         }
     }
 
@@ -278,8 +286,9 @@ extension Acoustics.String {
                     taut * (line.now[index] - line.now[index - 1])
                     * (line.before[index] - line.before[index - 1]) / 2
                 total += stiff * curve[index] * curved[index] / 2
-                for (part, kept) in zip(damping.memory, line.kept) {
-                    let strain = line.now[index] - line.now[index - 1] - kept[index] + kept[index - 1]
+                for (number, part) in damping.memory.enumerated() {
+                    let kept = number * line.now.count + index
+                    let strain = line.now[index] - line.now[index - 1] - line.kept[kept] + line.kept[kept - 1]
                     total += density * part.strength * strain * strain / (2 * spacing)
                 }
             }
@@ -400,7 +409,6 @@ extension Acoustics.String {
         let rise = 2 * damping.rising.underlying * interval / (spacing * spacing)
         let steady = damping.steady.underlying * interval
         let steep = 2 * damping.steep * interval / (spacing * spacing * spacing * spacing)
-        let pulls = damping.memory.map { $0.strength * step / (spacing * spacing) }
         up.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
         across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
         let mass = density * spacing * (1 + steady)
@@ -427,7 +435,6 @@ extension Acoustics.String {
                 index += 1
             }
         }
-        let follows = damping.memory.map { 1 - Double.math.exp(-interval / $0.time) }
         up.turn(end: end.up.underlying, follows: follows)
         across.turn(end: end.across.underlying, follows: follows)
     }
