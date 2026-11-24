@@ -440,7 +440,9 @@ extension `Acoustics Tests`.String {
     /// A 14 mm tip, as the instruments' are, rises within a fifth of what each quarter spacing is due. A 1.2 mm tip
     /// holds the string across by friction over little more than a spacing, so the board's grip at the points still
     /// shows; it stays within half and twice.
-    @Test(arguments: [(0.014, 0.2), (0.0012, 0.5)])
+    ///
+    /// Eighteen plucks: run optimized only, as unoptimized they take most of an hour.
+    @Test(.enabled(if: optimized), arguments: [(0.014, 0.2), (0.0012, 0.5)])
     func `A stopped pitch rises smoothly as a fingertip moves, not a grid spacing at a time`(tip: (width: Double, off: Double)) {
         let spacing = `Acoustics Tests`.string().spacing.underlying
         let heard = (0...8).map { quarter in
@@ -453,4 +455,12 @@ extension `Acoustics Tests`.String {
             #expect(rise < due / (1 - tip.off), "\(rises) against \(due)")
         }
     }
+}
+
+extension `Acoustics Tests`.String {
+    #if DEBUG
+        static let optimized = false
+    #else
+        static let optimized = true
+    #endif
 }
