@@ -81,7 +81,7 @@ extension Acoustics.String.Losses {
     /// A plain steel string in room air: δ = 4.5 × 10⁻³ in bending and a thermoelastic 1/Q = 2.03 × 10⁻⁴, as
     /// Issanchou, Bilbao, Le Carrou, Touzé and Doaré (2017, §4.2) select for a steel guitar string.
     ///
-    /// Wound strings lose more, by friction between their windings (Paté et al. 2014, p. 3047); no value for that is
+    /// Wound strings lose more, by friction between their windings (Paté et al. 2014, p. 3048); no value for that is
     /// in print, so it is left out.
     public static func steel(diameter: Length<Space.Physical, Double>, in air: Acoustics.Air? = .room) -> Self {
         Self(diameter: diameter, air: air, bending: Loss.amount(4.5e-3), steady: Loss.amount(2.03e-4))
@@ -99,14 +99,14 @@ extension Acoustics.String.Losses {
         Self(diameter: diameter, air: air, bending: Loss.amount(2.0e-2), steady: Loss.amount(4.0e-4))
     }
 
-    /// A plain gut string in room air, losing what plain nylon loses.
+    /// A plain gut string in room air: δ = 0.04 in bending and no steady loss, as Woodhouse and Lynch-Aird (2019,
+    /// Table I and p. 520) fit to the pluck damping of natural gut strings.
     ///
-    /// No loss factor measured on gut is in open print: Lynch-Aird and Woodhouse could not test gut in their dynamic
-    /// analyser (2018, p. 3) and found gut's pluck loss factors "largely useless" (2023, §3.1.4). What is in print is
-    /// Woodhouse's finding that a lute's plain gut strings behave, "in terms of damping, … very similar to the nylon
-    /// strings" (Euphonics, §7.2, 2022), so gut takes nylon's values. Woodhouse and Lynch-Aird (2019, Table 1) is where
-    /// a value for gut itself is to be read.
+    /// Their Table I gives gut E′ = 6.0 GPa and E″ = 0.24 GPa, and the text "fixed values E = 6 GPa, η_E = 0.04".
+    /// Their η_bend ≈ λ η_E (eq. 14) is this law's bending term, so η_E is δ; their total, eq. (15), is the body's,
+    /// the air's and the bending's loss, with no steady term. Lynch-Aird and Woodhouse (2023, §3.1.4) find gut's
+    /// measured loss factors follow this prediction "very well" at high frequencies.
     public static func gut(diameter: Length<Space.Physical, Double>, in air: Acoustics.Air? = .room) -> Self {
-        nylon(diameter: diameter, in: air)
+        Self(diameter: diameter, air: air, bending: Loss.amount(0.04))
     }
 }

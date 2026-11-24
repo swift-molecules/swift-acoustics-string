@@ -41,10 +41,14 @@ extension `Acoustics Tests`.Losses {
         #expect(nylon.air == .room)
     }
 
-    /// Woodhouse (Euphonics §7.2): a lute's plain gut strings damp "very similar to the nylon strings".
-    @Test func `Gut loses what nylon loses, as Woodhouse finds for a lute's plain gut`() {
-        #expect(Acoustics.String.Losses.gut(diameter: 0.001) == .nylon(diameter: 0.001))
-        #expect(Acoustics.String.Losses.gut(diameter: 0.001, in: nil) == .nylon(diameter: 0.001, in: nil))
+    /// Woodhouse and Lynch-Aird (2019, Table I): natural gut, E′ 6.0 GPa and E″ 0.24 GPa; p. 520: "fixed values
+    /// E = 6 GPa, η_E = 0.04".
+    @Test func `Gut loses 0.04 in bending and nothing steadily, as Woodhouse and Lynch-Aird fit`() {
+        let gut = Acoustics.String.Losses.gut(diameter: 0.001)
+        #expect(gut.bending == 0.04)
+        #expect(abs(gut.bending.underlying - 0.24 / 6.0) < 1e-15)
+        #expect(gut.steady == .zero)
+        #expect(gut.air == .room)
     }
 
     /// Woodhouse's bending term (2004, eq. 8), B η_B k² / (T + B k²) with k = nπ/L, is this law's to first order in
