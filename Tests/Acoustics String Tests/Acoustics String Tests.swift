@@ -158,6 +158,30 @@ extension `Acoustics Tests`.String {
         #expect((energy.most - energy.least) / energy.start < 1e-9)
     }
 
+    /// A tip that never touches changes the energy only by how its region shares out the bending, under 10⁻³; one that
+    /// came back to where its nodes were kept long before, on a string that has moved on, gave it a thousand times.
+    @Test func `A fingertip that comes back to a ringing string takes it as it is, not as it was`() {
+        var string = `Acoustics Tests`.string()
+        string.displace(`Acoustics Tests`.pulled(.init(up: 0.002, across: 0.003), at: 0.86))
+        let tip = Acoustics.String.Finger(
+            place: 0.95,
+            width: 0.012,
+            radius: 0.007,
+            centre: .init(up: 0.02),
+            contact: `Acoustics Tests`.flesh
+        )
+        let start = string.energy.underlying
+        var worst = 0.0
+        for fingers in [[tip], [], [tip]] {
+            string.fingers = fingers
+            (0..<1_000).forEach { _ in
+                string.advance()
+                worst = max(worst, abs(string.energy.underlying - start))
+            }
+        }
+        #expect(worst / start < 1e-3)
+    }
+
     @Test func `With loss, friction and a damping fingertip the energy only falls`() {
         var string = `Acoustics Tests`.string(
             decay: .init(steady: 0.8, rising: 0.0004),

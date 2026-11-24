@@ -385,6 +385,12 @@ extension Acoustics.String {
         let presses = fingers.isEmpty ? [] : presses()
         let regions = regions(presses)
         var inside = [Bool](repeating: false, count: regions.isEmpty ? 0 : count + 1)
+        if regions.isEmpty, !pattern.isEmpty {
+            // WHY: with no finger on it the string keeps no nodes; a finger that comes back takes it as it is then.
+            pattern = []
+            held = []
+            factorings = []
+        }
         if !regions.isEmpty {
             up.ahead[count] = end.up.underlying
             across.ahead[count] = end.across.underlying
