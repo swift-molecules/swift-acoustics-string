@@ -9,9 +9,8 @@ extension Acoustics.String {
         public var friction: Friction.Value<Double>
         /// The sliding speed under which friction holds.
         public var creep: Velocity.Value<Double>
-        /// Loss while pressed, in s/m: the push grows by `damping` × the speed into the board. No atom holds this
-        /// kind yet, so it is a scalar.
-        public var damping: Double
+        /// Loss while pressed, as Hunt and Crossley's: the push grows by `damping` × the speed into the board.
+        public var damping: Slowness.Value<Double>
         @usableFromInline var clearance: @Sendable (Length<Space.Physical, Double>) -> Length<Space.Physical, Double>
 
         /// - Parameter clearance: the gap between the resting string and the board, by distance from the nut.
@@ -20,7 +19,7 @@ extension Acoustics.String {
             contact: Contact,
             friction: Friction.Value<Double> = .zero,
             creep: Velocity.Value<Double> = Velocity.amount(0.001),
-            damping: Double = 0,
+            damping: Slowness.Value<Double> = .zero,
             clearance: @escaping @Sendable (Length<Space.Physical, Double>) -> Length<Space.Physical, Double>
         ) {
             self.reach = reach

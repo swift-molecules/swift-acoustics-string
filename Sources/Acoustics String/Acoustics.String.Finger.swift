@@ -17,9 +17,8 @@ extension Acoustics.String {
         public var friction: Friction.Value<Double>
         /// The sliding speed under which the skin holds.
         public var creep: Velocity.Value<Double>
-        /// Loss in the flesh while pressed, in s/m: the push grows by `damping` × the speed into the flesh. No atom
-        /// holds this kind yet, so it is a scalar.
-        public var damping: Double
+        /// Loss while pressed, as Hunt and Crossley's: the push grows by `damping` × the speed into the flesh.
+        public var damping: Slowness.Value<Double>
 
         public init(
             place: Length<Space.Physical, Double>,
@@ -30,7 +29,7 @@ extension Acoustics.String {
             contact: Contact,
             friction: Friction.Value<Double> = .zero,
             creep: Velocity.Value<Double> = Velocity.amount(0.001),
-            damping: Double = 0
+            damping: Slowness.Value<Double> = .zero
         ) {
             self.place = place
             self.width = width

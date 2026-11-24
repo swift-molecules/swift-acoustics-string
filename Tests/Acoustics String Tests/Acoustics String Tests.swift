@@ -1,7 +1,7 @@
 import Acoustics_String
-import Wavenumber
 import Foundation
 import Testing
+import Wavenumber
 
 enum `Acoustics Tests` {}
 
@@ -50,7 +50,7 @@ extension `Acoustics Tests` {
             reach: 0.86,
             contact: .init(pushing: 122_070.3125, at: 0x1p-10, exponent: 1.5),
             friction: Friction.amount(friction),
-            damping: damping
+            damping: Slowness.amount(damping)
         ) { Space.Physical.metres(0.0008 + 0.006 * $0.underlying / 0.86) }
     }
 

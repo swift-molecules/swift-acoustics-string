@@ -1,6 +1,6 @@
-@testable import Acoustics_String
 import Foundation
 import Testing
+@testable import Acoustics_String
 
 extension `Acoustics Tests` {
     @Suite struct Losses {}

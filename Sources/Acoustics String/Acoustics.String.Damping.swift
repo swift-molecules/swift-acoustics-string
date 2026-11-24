@@ -142,8 +142,11 @@ extension Acoustics.String.Damping {
             let scaled = (row.x / reach) * (row.x / reach)
             switch which {
             case 0: return 1
+
             case 1: return scaled
+
             case 2: return scaled * scaled
+
             default:
                 let time = lags[which - 3]
                 return scaled * Self.lagging(row.angular, time, interval) / Self.lagging(top.angular, time, interval)

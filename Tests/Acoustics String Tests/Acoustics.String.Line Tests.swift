@@ -1,5 +1,5 @@
-@testable import Acoustics_String
 import Testing
+@testable import Acoustics_String
 
 extension `Acoustics Tests` {
     @Suite struct Line {}

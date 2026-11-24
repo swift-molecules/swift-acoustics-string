@@ -461,11 +461,11 @@ extension Acoustics.String {
             energy: { Energy.joules(stored(index, nextUp, $0.underlying, spans)) },
             slope: { Force.newtons(slope(index, nextUp, $0.underlying, spans).across) }
         ).underlying
-        if let board, top[index] > nextUp, board.friction > .zero || board.damping > 0 {
+        if let board, top[index] > nextUp, board.friction > .zero || board.damping > .zero {
             let push =
                 spacing.underlying * board.contact.force(pressed: Space.Physical.metres(top[index] - nextUp)).underlying
             let drag = slack * push / (2 * interval)
-            nextUp = wasUp + (nextUp - wasUp) / (1 + drag * board.damping)
+            nextUp = wasUp + (nextUp - wasUp) / (1 + drag * board.damping.underlying)
             nextAcross =
                 wasAcross
                 + Self.rub(
@@ -476,7 +476,7 @@ extension Acoustics.String {
         }
         for which in fingers.indices where index >= spans[which].low && index <= spans[which].high {
             let finger = fingers[which]
-            guard finger.friction > .zero || finger.damping > 0 else { continue }
+            guard finger.friction > .zero || finger.damping > .zero else { continue }
             let radius = finger.radius.underlying
             let speedUp = finger.speed.up.underlying
             let speedAcross = finger.speed.across.underlying
@@ -492,7 +492,7 @@ extension Acoustics.String {
             let outAcross = side / away
             let movedUp = nextUp - wasUp - 2 * interval * speedUp
             let movedAcross = nextAcross - wasAcross - 2 * interval * speedAcross
-            let out = (movedUp * outUp + movedAcross * outAcross) / (1 + drag * finger.damping)
+            let out = (movedUp * outUp + movedAcross * outAcross) / (1 + drag * finger.damping.underlying)
             let along = Self.rub(
                 movedAcross * outUp - movedUp * outAcross,
                 slack * push * finger.friction.underlying,
