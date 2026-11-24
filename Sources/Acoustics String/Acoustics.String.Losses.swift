@@ -86,4 +86,27 @@ extension Acoustics.String.Losses {
     public static func steel(diameter: Length<Space.Physical, Double>, in air: Acoustics.Air? = .room) -> Self {
         Self(diameter: diameter, air: air, bending: Loss.amount(4.5e-3), steady: Loss.amount(2.03e-4))
     }
+
+    /// A plain nylon string in room air: η_B = 2.0 × 10⁻² in bending and a steady η_F = 4.0 × 10⁻⁴, as Woodhouse
+    /// (2004, Table I) fits to the plain nylon trebles of a classical guitar.
+    ///
+    /// His eq. (8) is η = [T (η_F + η_A / ω) + B η_B (nπ/L)²] / [T + B (nπ/L)²]; its bending part, B η_B (nπ/L)² / T,
+    /// is this law's, so η_B is δ. η_F is the "internal friction" of the monofilament (p. 956), so it is the steady
+    /// loss; η_A / ω is his fitted stand-in for the air, which the air's own law replaces here. Table I gives η_B as
+    /// 2.4, 2.0 and 2.0 × 10⁻² on the three plain strings, "of the order of 2 %" on all six (p. 956), and η_F as 40, 40
+    /// and 14 × 10⁻⁵; the second string's pair is taken.
+    public static func nylon(diameter: Length<Space.Physical, Double>, in air: Acoustics.Air? = .room) -> Self {
+        Self(diameter: diameter, air: air, bending: Loss.amount(2.0e-2), steady: Loss.amount(4.0e-4))
+    }
+
+    /// A plain gut string in room air, losing what plain nylon loses.
+    ///
+    /// No loss factor measured on gut is in open print: Lynch-Aird and Woodhouse could not test gut in their dynamic
+    /// analyser (2018, p. 3) and found gut's pluck loss factors "largely useless" (2023, §3.1.4). What is in print is
+    /// Woodhouse's finding that a lute's plain gut strings behave, "in terms of damping, … very similar to the nylon
+    /// strings" (Euphonics, §7.2, 2022), so gut takes nylon's values. Woodhouse and Lynch-Aird (2019, Table 1) is where
+    /// a value for gut itself is to be read.
+    public static func gut(diameter: Length<Space.Physical, Double>, in air: Acoustics.Air? = .room) -> Self {
+        nylon(diameter: diameter, in: air)
+    }
 }

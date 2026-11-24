@@ -33,6 +33,41 @@ extension `Acoustics Tests`.Losses {
         #expect(steel.air == .room)
     }
 
+    /// Woodhouse (2004, Table I, second string, B₃, plain nylon): "η_B (×10⁻²) … 2.0" and "η_F (×10⁻⁵) … 40".
+    @Test func `Nylon loses 2.0 × 10⁻² in bending and 4.0 × 10⁻⁴ steadily, as Woodhouse fits`() {
+        let nylon = Acoustics.String.Losses.nylon(diameter: 0.001)
+        #expect(nylon.bending == 2.0e-2)
+        #expect(nylon.steady == 40e-5)
+        #expect(nylon.air == .room)
+    }
+
+    /// Woodhouse (Euphonics §7.2): a lute's plain gut strings damp "very similar to the nylon strings".
+    @Test func `Gut loses what nylon loses, as Woodhouse finds for a lute's plain gut`() {
+        #expect(Acoustics.String.Losses.gut(diameter: 0.001) == .nylon(diameter: 0.001))
+        #expect(Acoustics.String.Losses.gut(diameter: 0.001, in: nil) == .nylon(diameter: 0.001, in: nil))
+    }
+
+    /// Woodhouse's bending term (2004, eq. 8), B η_B k² / (T + B k²) with k = nπ/L, is this law's to first order in
+    /// x = B k² / T: this law gives B δ k² (1 + x) / T, so the two differ by exactly (1 + x)². On his second string
+    /// (Table I: L 0.65 m, T 53.4 N, ρ 0.52 g/m, B 160 × 10⁻⁶ N m²), with no air and no steady loss.
+    @Test func `Nylon's bending loss is Woodhouse's eq. 8 bending term to first order in the stiffness`() {
+        let losses = Acoustics.String.Losses(diameter: 0.001, air: nil, bending: 2.0e-2)
+        let (length, tension, density, stiffness) = (0.65, 53.4, 0.52e-3, 160e-6)
+        for n in [1.0, 10, 40] {
+            let k = n * Double.pi / length
+            let x = stiffness * k * k / tension
+            let frequency = (tension / density * k * k + stiffness / density * k * k * k * k).squareRoot() / (2 * Double.pi)
+            let woodhouse = stiffness * 2.0e-2 * k * k / (tension + stiffness * k * k)
+            let found = losses.loss(
+                at: Frequency.hertz(frequency),
+                tension: Force.newtons(tension),
+                density: Density.Linear.amount(density),
+                stiffness: Rigidity.Flexural.amount(stiffness)
+            ).underlying
+            #expect(abs(found / (woodhouse * (1 + x) * (1 + x)) - 1) < 1e-12)
+        }
+    }
+
     /// Issanchou et al. (2017, eq. 12, on their Table 1 string: L 1.002 m, d 0.43 mm, T 180.5 N, μ 1.17 × 10⁻³ kg/m,
     /// B 1.78 × 10⁻⁵, in air of η 1.8 × 10⁻⁵ Pa·s and ρ 1.2 kg/m³):
     /// Q⁻¹ = R / (2π μ ν) + 4π² μ E I δ ν² / T² + Q⁻¹te, with R = 2π η + 2π d √(π η ρ ν) and E I = B T L² / π².
