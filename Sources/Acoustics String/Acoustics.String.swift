@@ -15,7 +15,7 @@ extension Acoustics {
         /// The stiffness the grid is stepped with: a little more than `stiffness`, so the grid's own flattening of
         /// high partials is cancelled and they sound where the stiff string's law puts them.
         @usableFromInline let stepped: Rigidity.Flexural.Value<Double>
-        public let decay: Decay
+        @usableFromInline let damping: Damping
         public let interval: Time.Duration.Value<Double>
         /// The distance between neighbouring points.
         public let spacing: Length<Space.Physical, Double>
@@ -30,47 +30,110 @@ extension Acoustics {
         @usableFromInline var high: [Int] = []
         @usableFromInline var share: [Double] = []
 
+        /// A string that loses what physics says it loses: to the air, and inside its material.
+        ///
+        /// The grid carries a decay of the form a + b β² + c β⁴ in the wavenumber β; it is matched to `losses` over
+        /// the partials up to 16 kHz.
         public init(
             length: Length<Space.Physical, Double>,
             tension: Force.Value<Double>,
             density: Density.Linear.Value<Double>,
             stiffness: Rigidity.Flexural.Value<Double> = .zero,
-            decay: Decay = .none,
+            losses: Losses = .none,
             board: Board? = nil,
+            every interval: Time.Duration.Value<Double>
+        ) {
+            // WHY: the grid's spacing depends on the losses, and the match on the spacing; two rounds settle both.
+            var spacing = 0.0
+            var damping = Damping(steady: .zero, rising: .zero, steep: 0)
+            for _ in 0..<3 {
+                damping = Damping(
+                    matching: { frequency in
+                        losses.decay(
+                            at: Frequency.hertz(frequency),
+                            tension: tension,
+                            density: density,
+                            stiffness: stiffness
+                        ).underlying
+                    },
+                    length: length.underlying,
+                    speed: tension.underlying / density.underlying,
+                    bending: stiffness.underlying / density.underlying,
+                    top: Swift.min(16_000, 0.25 / interval.underlying),
+                    spacing: spacing
+                )
+                let grid = Self.grid(
+                    length: length.underlying,
+                    tension: tension.underlying,
+                    density: density.underlying,
+                    stiffness: stiffness.underlying,
+                    damping: damping,
+                    interval: interval.underlying
+                )
+                let next = length.underlying / Double(grid.count)
+                if next == spacing { break }
+                spacing = next
+            }
+            self.init(
+                length: length,
+                tension: tension,
+                density: density,
+                stiffness: stiffness,
+                damping: damping,
+                board: board,
+                every: interval
+            )
+        }
+
+        /// A string whose ringing dies by a fitted decay: the behaviour before physical losses, kept until they are
+        /// heard and approved. Delete it then.
+        public init(
+            length: Length<Space.Physical, Double>,
+            tension: Force.Value<Double>,
+            density: Density.Linear.Value<Double>,
+            stiffness: Rigidity.Flexural.Value<Double> = .zero,
+            decay: Decay,
+            board: Board? = nil,
+            every interval: Time.Duration.Value<Double>
+        ) {
+            self.init(
+                length: length,
+                tension: tension,
+                density: density,
+                stiffness: stiffness,
+                damping: Damping(steady: decay.steady, rising: decay.rising, steep: 0),
+                board: board,
+                every: interval
+            )
+        }
+
+        init(
+            length: Length<Space.Physical, Double>,
+            tension: Force.Value<Double>,
+            density: Density.Linear.Value<Double>,
+            stiffness: Rigidity.Flexural.Value<Double>,
+            damping: Damping,
+            board: Board?,
             every interval: Time.Duration.Value<Double>
         ) {
             self.length = length
             self.tension = tension
             self.density = density
             self.stiffness = stiffness
-            self.decay = decay
+            self.damping = damping
             self.board = board
             self.interval = interval
             let length = length.underlying
-            let tension = tension.underlying
-            let density = density.underlying
-            let stiffness = stiffness.underlying
-            let interval = interval.underlying
-            let step = interval * interval
-            let wave = tension / density * step + 4 * decay.rising.underlying * interval
-            func points(_ stiff: Double) -> Int {
-                let least = ((wave + (wave * wave + 16 * stiff / density * step).squareRoot()) / 2).squareRoot()
-                return Swift.max(2, Int(length / least))
-            }
-            // WHY: The grid flattens a partial of wavenumber β by c²β⁴(h² − c²k²)/12 in ω²; a stiff string sharpens it by
-            // κ²β⁴. Stepping with κ² raised by that much cancels the flattening to this order. The spacing is chosen
-            // for the raised stiffness, which is never less than the one stepped with, so the grid stays stable.
-            var sized = stiffness
-            var raised = stiffness
-            for _ in 0..<8 {
-                let spacing = length / Double(points(sized))
-                let speed = tension / density
-                raised = stiffness + density * speed * (spacing * spacing - speed * step) / 12
-                if raised <= sized { break }
-                sized = raised
-            }
-            self.stepped = Rigidity.Flexural.amount(Swift.min(raised, sized))
-            self.count = points(sized)
+            let grid = Self.grid(
+                length: length,
+                tension: tension.underlying,
+                density: density.underlying,
+                stiffness: stiffness.underlying,
+                damping: damping,
+                interval: interval.underlying
+            )
+            self.stepped = Rigidity.Flexural.amount(grid.stepped)
+            self.count = grid.count
             let spacing = length / Double(count)
             self.spacing = Space.Physical.metres(spacing)
             self.up = Line(count + 1)
@@ -80,6 +143,41 @@ extension Acoustics {
                 return -board.clearance(Space.Physical.metres(Double(index) * spacing)).underlying
             }
         }
+    }
+}
+
+extension Acoustics.String {
+    /// The number of stretches the grid needs to stay stable, and the stiffness it is stepped with.
+    static func grid(
+        length: Double,
+        tension: Double,
+        density: Double,
+        stiffness: Double,
+        damping: Damping,
+        interval: Double
+    ) -> (count: Int, stepped: Double) {
+        let step = interval * interval
+        let wave = tension / density * step + 4 * damping.rising.underlying * interval
+        let steep = 64 * damping.steep * interval
+        func points(_ stiff: Double) -> Int {
+            // WHY: von Neumann on the step: h⁴ ≥ (c²k² + 4σ₁k) h² + 4κ²k² + 16σ₂k keeps every partial bounded.
+            let least = ((wave + (wave * wave + 16 * stiff / density * step + steep).squareRoot()) / 2)
+                .squareRoot()
+            return Swift.max(2, Int(length / least))
+        }
+        // WHY: The grid flattens a partial of wavenumber β by c²β⁴(h² − c²k²)/12 in ω²; a stiff string sharpens it by
+        // κ²β⁴. Stepping with κ² raised by that much cancels the flattening to this order. The spacing is chosen
+        // for the raised stiffness, which is never less than the one stepped with, so the grid stays stable.
+        var sized = stiffness
+        var raised = stiffness
+        for _ in 0..<8 {
+            let spacing = length / Double(points(sized))
+            let speed = tension / density
+            raised = stiffness + density * speed * (spacing * spacing - speed * step) / 12
+            if raised <= sized { break }
+            sized = raised
+        }
+        return (points(sized), Swift.min(raised, sized))
     }
 }
 
@@ -95,6 +193,11 @@ extension Acoustics.String {
                 + stiffness / density * wavenumber * wavenumber * wavenumber * wavenumber).squareRoot()
                 / (2 * Double.pi)
         )
+    }
+
+    /// How fast a partial of this wavenumber dies on the grid, before anything touches the string.
+    public func decay(at wavenumber: Wavenumber.Value<Double>) -> Decay::Decay.Value<Double> {
+        Decay::Decay.amount(damping.decay(wavenumber.underlying, spacing: spacing.underlying))
     }
 
     /// Where the string is, point by point from nut to bridge.
@@ -176,9 +279,19 @@ extension Acoustics.String {
 }
 
 extension Acoustics.String {
+    /// Half the length of string a fingertip presses on: half its width, but never less than one spacing.
+    ///
+    /// WHY: a tip narrower than the grid would fall between points, and act on the nearest one alone, so a stopped
+    /// pitch would jump from point to point as the tip moves. Spread over at least two points, its weight passes
+    /// smoothly from one to the next.
+    @usableFromInline
+    func reach(_ finger: Finger) -> Double {
+        Swift.max(finger.width.underlying / 2, spacing.underlying)
+    }
+
     @usableFromInline
     func cover(_ finger: Finger, _ index: Int) -> Double {
-        let off = (Double(index) * spacing.underlying - finger.place.underlying) / (finger.width.underlying / 2)
+        let off = (Double(index) * spacing.underlying - finger.place.underlying) / reach(finger)
         guard off.magnitude < 1 else { return 0 }
         let rest = 1 - off * off
         return rest * rest
@@ -188,11 +301,11 @@ extension Acoustics.String {
     func span(_ finger: Finger) -> Span {
         let spacing = self.spacing.underlying
         let place = finger.place.underlying
-        let width = finger.width.underlying
-        let low = Swift.max(1, Int(((place - width / 2) / spacing).rounded(.up)))
+        let reach = reach(finger)
+        let low = Swift.max(1, Int(((place - reach) / spacing).rounded(.up)))
         let high = Swift.min(
             top.endIndex - 2,
-            Int(((place + width / 2) / spacing).rounded(.down))
+            Int(((place + reach) / spacing).rounded(.down))
         )
         var whole = 0.0
         var index = low
@@ -269,10 +382,11 @@ extension Acoustics.String {
         let step = interval * interval
         let wave = tension * step / (density * spacing * spacing)
         let stiff = stepped.underlying * step / (density * spacing * spacing * spacing * spacing)
-        let rise = 2 * decay.rising.underlying * interval / (spacing * spacing)
-        let steady = decay.steady.underlying * interval
-        up.coast(wave: wave, stiff: stiff, rise: rise, steady: steady)
-        across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady)
+        let rise = 2 * damping.rising.underlying * interval / (spacing * spacing)
+        let steady = damping.steady.underlying * interval
+        let steep = 2 * damping.steep * interval / (spacing * spacing * spacing * spacing)
+        up.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep)
+        across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep)
         let mass = density * spacing * (1 + steady)
         let slack = step / mass
         let spans = fingers.map(span)

@@ -9,7 +9,7 @@ enum `Acoustics Tests` {}
 extension `Acoustics Tests` {
     @Suite struct String {}
 
-    fileprivate static let interval = 1 / 96_000.0
+    static let interval = 1 / 96_000.0
 
     fileprivate static func string(
         decay: Acoustics.String.Decay = .none,
@@ -26,12 +26,27 @@ extension `Acoustics Tests` {
         )
     }
 
-    fileprivate static func metres(_ scalar: Double) -> Length<Space.Physical, Double> { Space.Physical.metres(scalar) }
+    static func string(
+        losses: Acoustics.String.Losses,
+        board: Acoustics.String.Board? = nil
+    ) -> Acoustics.String {
+        Acoustics.String(
+            length: 1.06,
+            tension: 290,
+            density: 0.0062,
+            stiffness: 0.004,
+            losses: losses,
+            board: board,
+            every: Time.Duration.seconds(interval)
+        )
+    }
+
+    static func metres(_ scalar: Double) -> Length<Space.Physical, Double> { Space.Physical.metres(scalar) }
 
     /// The flesh of a fingertip: 12.2 N at 2⁻¹⁰ m (about a millimetre), Hertzian.
-    fileprivate static let flesh = Contact(pushing: 12.207_031_25, at: 0x1p-10, exponent: 1.5)
+    static let flesh = Contact(pushing: 12.207_031_25, at: 0x1p-10, exponent: 1.5)
 
-    fileprivate static func board(friction: Double = 0, damping: Double = 0) -> Acoustics.String.Board {
+    static func board(friction: Double = 0, damping: Double = 0) -> Acoustics.String.Board {
         Acoustics.String.Board(
             reach: 0.86,
             contact: .init(pushing: 122_070.3125, at: 0x1p-10, exponent: 1.5),
@@ -40,7 +55,7 @@ extension `Acoustics Tests` {
         ) { Space.Physical.metres(0.0008 + 0.006 * $0.underlying / 0.86) }
     }
 
-    fileprivate static func pulled(
+    static func pulled(
         _ depth: Acoustics.String.Offset<Measure<1, Space.Physical>>,
         at place: Double
     ) -> (Length<Space.Physical, Double>) ->
@@ -53,7 +68,7 @@ extension `Acoustics Tests` {
         }
     }
 
-    fileprivate static func drift(
+    static func drift(
         _ string: inout Acoustics.String,
         steps: Int
     ) -> (
@@ -198,7 +213,11 @@ extension `Acoustics Tests`.String {
     }
 
     /// Plucks with a fingertip drawn across 20 cm from the bridge, a finger stopping the string at `stop` if given.
-    fileprivate static func plucked(stop: Double?, lasting time: Double) -> (pulled: Double, kept: Double, heard: Double) {
+    static func plucked(
+        stop: Double?,
+        width: Double = 0.014,
+        lasting time: Double
+    ) -> (pulled: Double, kept: Double, heard: Double) {
         let interval = `Acoustics Tests`.interval
         var string = `Acoustics Tests`.string(
             decay: .init(steady: 0.8, rising: 0.0004),
@@ -211,7 +230,7 @@ extension `Acoustics Tests`.String {
             fingers.append(
                 .init(
                     place: `Acoustics Tests`.metres(stop),
-                    width: 0.014,
+                    width: `Acoustics Tests`.metres(width),
                     radius: 0.007,
                     centre: .init(up: 0.008),
                     contact: flesh,
