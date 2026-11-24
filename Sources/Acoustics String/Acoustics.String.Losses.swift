@@ -55,9 +55,10 @@ extension Acoustics.String.Losses {
         let pull = tension.underlying
         var total = steady.underlying
         if let air {
+            let viscosity = air.viscosity.underlying
             let drag =
-                2 * Double.pi * air.viscosity
-                + 2 * Double.pi * diameter.underlying * (Double.pi * air.viscosity * air.density * f).squareRoot()
+                2 * Double.pi * viscosity
+                + 2 * Double.pi * diameter.underlying * (Double.pi * viscosity * air.density.underlying * f).squareRoot()
             total += drag / (2 * Double.pi * mu * f)
         }
         total += 4 * Double.pi * Double.pi * mu * stiffness.underlying * bending.underlying * f * f / (pull * pull)
