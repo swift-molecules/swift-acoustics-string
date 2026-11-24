@@ -18,7 +18,15 @@ let package = Package(
         .package(url: "https://github.com/swift-molecules/swift-acoustics.git", branch: "main"),
         .package(url: "https://github.com/swift-molecules/swift-acoustics-resonator.git", branch: "main"),
         .package(url: "https://github.com/swift-molecules/swift-contact.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-decay.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-density.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-friction.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-frequency.git", branch: "main"),
         .package(url: "https://github.com/swift-atoms/swift-numeric.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-rigidity.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-velocity.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-viscosity.git", branch: "main"),
+        .package(url: "https://github.com/swift-atoms/swift-wavenumber.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -26,13 +34,21 @@ let package = Package(
             dependencies: [
                 .product(name: "Acoustics", package: "swift-acoustics"),
                 .product(name: "Contact", package: "swift-contact"),
+                .product(name: "Decay", package: "swift-decay"),
+                .product(name: "Density", package: "swift-density"),
+                .product(name: "Friction", package: "swift-friction"),
+                .product(name: "Frequency", package: "swift-frequency"),
                 .product(name: "Numeric", package: "swift-numeric"),
+                .product(name: "Rigidity", package: "swift-rigidity"),
+                .product(name: "Velocity", package: "swift-velocity"),
+                .product(name: "Viscosity", package: "swift-viscosity"),
             ]
         ),
         .testTarget(
             name: "Acoustics String Tests",
             dependencies: [
                 .product(name: "Acoustics Resonator", package: "swift-acoustics-resonator"),
+                .product(name: "Wavenumber", package: "swift-wavenumber"),
                 .target(name: "Acoustics String"),
             ]
         ),

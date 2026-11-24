@@ -1,5 +1,6 @@
 import Acoustics_Resonator
 import Acoustics_String
+import Wavenumber
 import Foundation
 import Testing
 
@@ -21,26 +22,32 @@ extension `Acoustics Tests` {
             stiffness: 0.004,
             decay: decay,
             board: board,
-            every: interval
+            every: Time.Duration.seconds(interval)
         )
     }
+
+    fileprivate static func metres(_ scalar: Double) -> Length<Space.Physical, Double> { Space.Physical.metres(scalar) }
+
+    /// The flesh of a fingertip: 12.2 N at 2⁻¹⁰ m (about a millimetre), Hertzian.
+    fileprivate static let flesh = Contact(pushing: 12.207_031_25, at: 0x1p-10, exponent: 1.5)
 
     fileprivate static func board(friction: Double = 0, damping: Double = 0) -> Acoustics.String.Board {
         Acoustics.String.Board(
             reach: 0.86,
-            contact: .init(stiffness: 4e9, exponent: 1.5),
-            friction: friction,
+            contact: .init(pushing: 122_070.3125, at: 0x1p-10, exponent: 1.5),
+            friction: Friction.amount(friction),
             damping: damping
-        ) { 0.0008 + 0.006 * $0 / 0.86 }
+        ) { Space.Physical.metres(0.0008 + 0.006 * $0.underlying / 0.86) }
     }
 
     fileprivate static func pulled(
-        _ depth: Acoustics.String.Offset,
+        _ depth: Acoustics.String.Offset<Measure<1, Space.Physical>>,
         at place: Double
-    ) -> (Double) ->
-        Acoustics.String.Offset
+    ) -> (Length<Space.Physical, Double>) ->
+        Acoustics.String.Offset<Measure<1, Space.Physical>>
     {
         { along in
+            let along = along.underlying
             let share = along < place ? along / place : (1.06 - along) / (1.06 - place)
             return .init(up: depth.up * share, across: depth.across * share)
         }
@@ -52,12 +59,12 @@ extension `Acoustics Tests` {
     ) -> (
         least: Double, most: Double, start: Double
     ) {
-        let start = string.energy
+        let start = string.energy.underlying
         var least = start
         var most = start
         (0..<steps).forEach { _ in
             string.advance()
-            let energy = string.energy
+            let energy = string.energy.underlying
             least = min(least, energy)
             most = max(most, energy)
         }
@@ -73,14 +80,14 @@ extension `Acoustics Tests`.String {
         var worst = 0.0
         for partial in [1.0, 2, 3, 5, 8, 13, 21] {
             var string = `Acoustics Tests`.string()
-            string.displace { .init(up: 0.001 * sin(partial * Double.pi * $0 / 1.06)) }
+            string.displace { .init(up: `Acoustics Tests`.metres(0.001 * sin(partial * Double.pi * $0.underlying / 1.06))) }
             let middle = string.count / (2 * Int(partial)) + 1
             string.advance()
-            let before = string.shape[middle].up
+            let before = string.shape[middle].up.underlying
             string.advance()
-            let now = string.shape[middle].up
+            let now = string.shape[middle].up.underlying
             string.advance()
-            let after = string.shape[middle].up
+            let after = string.shape[middle].up.underlying
             let heard = acos((after + before) / (2 * now)) / (2 * Double.pi * `Acoustics Tests`.interval)
             let wavenumber = partial * Double.pi / 1.06
             let wanted =
@@ -104,15 +111,15 @@ extension `Acoustics Tests`.String {
         var string = `Acoustics Tests`.string(board: `Acoustics Tests`.board())
         string.displace(`Acoustics Tests`.pulled(.init(up: 0.009, across: 0.004), at: 0.86))
         var touched = false
-        let start = string.energy
+        let start = string.energy.underlying
         var worst = 0.0
         (0..<30_000).forEach { _ in
             string.advance()
-            worst = max(worst, abs(string.energy - start))
+            worst = max(worst, abs(string.energy.underlying - start))
             if !touched {
                 touched = string.shape.indices.contains {
-                    string.shape[$0].up < -(0.0008 + 0.006 * Double($0) * string.spacing / 0.86)
-                        && Double($0) * string.spacing <= 0.86
+                    string.shape[$0].up.underlying < -(0.0008 + 0.006 * Double($0) * string.spacing.underlying / 0.86)
+                        && Double($0) * string.spacing.underlying <= 0.86
                 }
             }
         }
@@ -128,12 +135,12 @@ extension `Acoustics Tests`.String {
                 width: 0.014,
                 radius: 0.007,
                 centre: .init(up: 0.0035, across: 0.0005),
-                contact: .init(stiffness: 4e5, exponent: 1.5)
+                contact: `Acoustics Tests`.flesh
             )
         ]
         string.displace(`Acoustics Tests`.pulled(.init(up: 0.002, across: 0.006), at: 0.86))
         let energy = `Acoustics Tests`.drift(&string, steps: 30_000)
-        #expect(string.shape[Int(0.30 / string.spacing)].up < -0.001)
+        #expect(string.shape[Int(0.30 / string.spacing.underlying)].up < -0.001)
         #expect((energy.most - energy.least) / energy.start < 1e-9)
     }
 
@@ -148,18 +155,18 @@ extension `Acoustics Tests`.String {
                 width: 0.014,
                 radius: 0.007,
                 centre: .init(up: 0.0035, across: 0.0005),
-                contact: .init(stiffness: 4e5, exponent: 1.5),
+                contact: `Acoustics Tests`.flesh,
                 friction: 0.6,
                 damping: 30
             )
         ]
         string.displace(`Acoustics Tests`.pulled(.init(up: 0.002, across: 0.006), at: 0.86))
-        var last = string.energy
+        var last = string.energy.underlying
         let start = last
         var rise = 0.0
         (0..<30_000).forEach { _ in
             string.advance()
-            let energy = string.energy
+            let energy = string.energy.underlying
             rise = max(rise, energy - last)
             last = energy
         }
@@ -171,20 +178,20 @@ extension `Acoustics Tests`.String {
         var string = `Acoustics Tests`.string()
         var body = Acoustics.Resonator(
             [(98.0, 1.0, 0.3), (183.0, -0.8, 0.9), (412.0, 0.5, -0.7), (1_530.0, 0.9, 0.4)].map {
-                .init(frequency: $0.0, decay: 0, mass: 0.4, reach: 0, driven: [$0.1, $0.2])
+                .init(frequency: Frequency.hertz($0.0), decay: 0, mass: 0.4, reach: 0, driven: [$0.1, $0.2])
             },
-            every: `Acoustics Tests`.interval
+            every: Time.Duration.seconds(`Acoustics Tests`.interval)
         )
         string.displace(`Acoustics Tests`.pulled(.init(up: 0.004, across: 0.007), at: 0.86))
-        let start = string.energy + body.energy
+        let start = (string.energy + body.energy).underlying
         var worst = 0.0
         var moved = 0.0
         (0..<40_000).forEach { _ in
             let pull = string.pull
             body.advance(driven: [pull.up, pull.across])
             string.advance(end: .init(up: body.felt[0], across: body.felt[1]))
-            worst = max(worst, abs(string.energy + body.energy - start))
-            moved = max(moved, abs(body.felt[0]))
+            worst = max(worst, abs((string.energy + body.energy).underlying - start))
+            moved = max(moved, abs(body.felt[0].underlying))
         }
         #expect(moved > 1e-6)
         #expect(worst / start < 1e-9)
@@ -197,13 +204,13 @@ extension `Acoustics Tests`.String {
             decay: .init(steady: 0.8, rising: 0.0004),
             board: `Acoustics Tests`.board(friction: 0.3, damping: 20)
         )
-        let flesh = Contact(stiffness: 4e5, exponent: 1.5)
+        let flesh = `Acoustics Tests`.flesh
         let pressed = stop.map { -(0.0008 + 0.006 * $0 / 0.86) + 0.007 - 0.0008 } ?? 0
         var fingers: [Acoustics.String.Finger] = []
         if let stop {
             fingers.append(
                 .init(
-                    place: stop,
+                    place: `Acoustics Tests`.metres(stop),
                     width: 0.014,
                     radius: 0.007,
                     centre: .init(up: 0.008),
@@ -226,7 +233,7 @@ extension `Acoustics Tests`.String {
         )
         string.fingers = fingers
         let plucking = fingers.endIndex - 1
-        let place = Int(0.86 / string.spacing)
+        let place = Int(0.86 / string.spacing.underlying)
         var pulled = 0.0
         var kept = 0.0
         var trace: [Double] = []
@@ -234,18 +241,18 @@ extension `Acoustics Tests`.String {
             let now = Double(step) * interval
             if stop != nil {
                 let down = min(now / 0.03, 1)
-                string.fingers[0].centre.up = 0.008 + (pressed - 0.008) * down
-                string.fingers[0].speed.up = down < 1 ? (pressed - 0.008) / 0.03 : 0
+                string.fingers[0].centre.up = `Acoustics Tests`.metres(0.008 + (pressed - 0.008) * down)
+                string.fingers[0].speed.up = Velocity.amount(down < 1 ? (pressed - 0.008) / 0.03 : 0)
             }
             if now > 0.04, now < 0.08 {
                 string.fingers[plucking].speed.across = 0.3
-                string.fingers[plucking].centre.across += 0.3 * interval
+                string.fingers[plucking].centre.across += `Acoustics Tests`.metres(0.3 * interval)
             } else if now >= 0.08 {
                 string.fingers[plucking].speed.across = 0
                 string.fingers[plucking].centre.up = 0.05
             }
             string.advance()
-            let here = string.shape[place].across
+            let here = string.shape[place].across.underlying
             if now < 0.08 { pulled = max(pulled, abs(here)) }
             if now >= 0.08 { kept = max(kept, abs(here)) }
             if now > 0.12 { trace.append(here) }
@@ -282,14 +289,16 @@ extension `Acoustics Tests`.String {
         let time = 0.3
         var string = `Acoustics Tests`.string(
             decay: .init(
-                low: (bare.frequency, time),
+                low: (bare.frequency, Time.Duration.seconds(time)),
                 high: (2_000, 0.1),
                 tension: bare.tension,
                 density: bare.density,
                 stiffness: bare.stiffness
             )
         )
-        string.displace { along in .init(up: 0.001 * Foundation.sin(Double.pi * along / 1.06), across: 0) }
+        string.displace { along in
+            .init(up: `Acoustics Tests`.metres(0.001 * Foundation.sin(Double.pi * along.underlying / 1.06)), across: 0)
+        }
         let start = string.energy
         (0..<Int(time / `Acoustics Tests`.interval)).forEach { _ in string.advance() }
         let fall = 10 * Foundation.log10(start / string.energy)
@@ -300,21 +309,26 @@ extension `Acoustics Tests`.String {
 extension `Acoustics Tests`.String {
     @Test func `A stiff string's partial near 2.3 kHz sounds within a cent of its law, not five flat`() {
         let string = `Acoustics Tests`.string()
-        let along = 2_200.0 / string.frequency
+        let along = 2_200.0 / string.frequency.underlying
         let mode = along.rounded()
-        let wavenumber = mode * Double.pi / string.length
+        let wavenumber = mode * Double.pi / string.length.underlying
+        let tension = string.tension.underlying
+        let density = string.density.underlying
+        let stiffness = string.stiffness.underlying
         let wanted =
-            (string.tension / string.density * wavenumber * wavenumber
-            + string.stiffness / string.density * wavenumber * wavenumber * wavenumber * wavenumber)
+            (tension / density * wavenumber * wavenumber
+            + stiffness / density * wavenumber * wavenumber * wavenumber * wavenumber)
             .squareRoot() / (2 * Double.pi)
         var ringing = string
-        ringing.displace { place in .init(up: 0.0001 * Foundation.sin(wavenumber * place), across: 0) }
-        let point = Int(0.37 / ringing.spacing)
-        var last = ringing.shape[point].up
+        ringing.displace { place in
+            .init(up: `Acoustics Tests`.metres(0.0001 * Foundation.sin(wavenumber * place.underlying)), across: 0)
+        }
+        let point = Int(0.37 / ringing.spacing.underlying)
+        var last = ringing.shape[point].up.underlying
         var crossings: [Double] = []
         (1...Int(0.05 / `Acoustics Tests`.interval)).forEach { step in
             ringing.advance()
-            let now = ringing.shape[point].up
+            let now = ringing.shape[point].up.underlying
             if last < 0, now >= 0 {
                 crossings.append((Double(step) - now / (now - last)) * `Acoustics Tests`.interval)
             }
@@ -323,5 +337,24 @@ extension `Acoustics Tests`.String {
         let periods = Double(crossings.dropFirst().count)
         let heard = periods / ((crossings.last ?? 0) - (crossings.first ?? 0))
         #expect(abs(1_200 * Foundation.log2(heard / wanted)) < 1)
+    }
+}
+
+extension `Acoustics Tests`.String {
+    @Test func `The string's laws balance their dimensions`() {
+        typealias D = Quantity.Dimension
+        let length = D.of(Measure<1, Space.Physical>.self)
+        let speed = D.of(Velocity.self)
+        // c² = T / μ
+        #expect(D.of(Force.self) / D.of(Density.Linear.self) == speed * speed)
+        // ω² = (T / μ) β² + (EI / μ) β⁴, with β a wavenumber
+        let wavenumber = D.of(Wavenumber.self)
+        let angular = D.of(Frequency.Angular.self)
+        #expect(speed * speed * wavenumber * wavenumber == angular * angular)
+        #expect(D.of(Rigidity.Flexural.self) / D.of(Density.Linear.self) * wavenumber * wavenumber * wavenumber * wavenumber == angular * angular)
+        // the rising decay: a viscosity times a squared wavenumber is a decay rate
+        #expect(D.of(Viscosity.Kinematic.self) * wavenumber * wavenumber == D.of(Decay::Decay.self))
+        // a point of the grid: linear density times spacing is a mass
+        #expect(D.of(Density.Linear.self) * length == D.of(Mass.self))
     }
 }
