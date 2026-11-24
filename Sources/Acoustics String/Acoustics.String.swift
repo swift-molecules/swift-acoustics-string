@@ -26,6 +26,14 @@ extension Acoustics {
         public let count: Int
         public let board: Board?
         public var fingers: [Finger] = []
+        /// The bow on the string, if one is drawn across it.
+        public var bow: Bow?
+        /// How fast the string last slid under the bow, past the bow: zero while the bow holds it.
+        public internal(set) var rubbing: Velocity.Value<Double> = .zero
+        /// The force the bow last put on the string, across it.
+        public internal(set) var gripping: Force.Value<Double> = .zero
+        /// How fast the string slid under the bow the step before, signed; zero while it held.
+        @usableFromInline var slipping = 0.0
         @usableFromInline var up: Line
         @usableFromInline var across: Line
         @usableFromInline var top: [Double]
@@ -515,6 +523,13 @@ extension Acoustics.String {
                     factorings.append((region.places, factored))
                 }
             }
+        }
+        if let bow {
+            rub(bow, slack)
+        } else if slipping != 0 || rubbing != .zero {
+            slipping = 0
+            rubbing = .zero
+            gripping = .zero
         }
         up.turn(end: end.up.underlying, follows: follows)
         across.turn(end: end.across.underlying, follows: follows)
