@@ -201,8 +201,20 @@ extension Acoustics.String {
             spread += weight * weight
         }
         guard spread > 0 else { return }
-        let free = moving / (2 * interval) - bow.speed.underlying
-        let give = slack * spread / (2 * interval)
+        var free = moving / (2 * interval) - bow.speed.underlying
+        var give = slack * spread / (2 * interval)
+        // WHY: the hair grips the surface, which moves across and turns; it feels both, and its force drives both.
+        var turning: (index: Int, near: Double, far: Double, slack: Double)?
+        if let twisting {
+            let (index, near, far) = twisting.beside(bow.place.underlying)
+            let line = twisting.line
+            let turned =
+                near * (line.ahead[index] - line.before[index]) + far * (line.ahead[index + 1] - line.before[index + 1])
+            let twistSlack = interval * interval / twisting.mass
+            free += turned / (2 * interval)
+            give += twistSlack * (near * near + far * far) / (2 * interval)
+            turning = (index, near, far, twistSlack)
+        }
         let force = Self.grip(
             free,
             give: give,
@@ -212,6 +224,10 @@ extension Acoustics.String {
         )
         for index in first...last where index > 0 && index < count {
             across.ahead[index] += slack * Self.share(index, along: along, reach: reach, whole: whole) * force
+        }
+        if let turning {
+            twisting?.line.ahead[turning.index] += turning.slack * turning.near * force
+            twisting?.line.ahead[turning.index + 1] += turning.slack * turning.far * force
         }
         rubbing = Velocity.amount(free + give * force)
         gripping = Force.newtons(force)

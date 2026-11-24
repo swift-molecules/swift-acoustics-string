@@ -28,6 +28,14 @@ extension Acoustics {
         public var fingers: [Finger] = []
         /// The bow on the string, if one is drawn across it.
         public var bow: Bow?
+        /// How the string twists, which only a bow drives; nil for a string the bow moves only across.
+        public var twist: Twist? {
+            didSet {
+                guard twist != oldValue else { return }
+                twisting = twist.map { Twisting($0, length: length.underlying, interval: interval.underlying) }
+            }
+        }
+        @usableFromInline var twisting: Twisting?
         /// How fast the string last slid under the bow, past the bow: zero while the bow holds it.
         public internal(set) var rubbing: Velocity.Value<Double> = .zero
         /// The force the bow last put on the string, across it.
@@ -337,6 +345,7 @@ extension Acoustics.String {
             total += lying(index, up.now[index]) / 2
             total += lying(index, up.before[index]) / 2
         }
+        if let twisting { total += twisting.energy(interval) }
         return Energy.joules(total)
     }
 }
@@ -395,6 +404,7 @@ extension Acoustics.String {
         let steep = 2 * damping.steep * interval / (spacing * spacing * spacing * spacing)
         up.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
         across.coast(wave: wave, stiff: stiff, rise: rise, steady: steady, steep: steep, pulls: pulls)
+        twisting?.coast()
         let mass = density * spacing * (1 + steady)
         let slack = step / mass
         let (presses, regions) = laid()
@@ -533,6 +543,7 @@ extension Acoustics.String {
         }
         up.turn(end: end.up.underlying, follows: follows)
         across.turn(end: end.across.underlying, follows: follows)
+        twisting?.line.turn(end: 0)
     }
 
     /// Lets the board push a point it lies on, then takes the board's losses at the point.
